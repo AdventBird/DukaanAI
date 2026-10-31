@@ -2,6 +2,7 @@ import { z } from 'zod';
 
 export * from './suppliers/index.js';
 export * from './procurement/index.js';
+export * from './ai/index.js';
 
 export const authContextSchema = z.object({
   userId: z.string().min(1),
