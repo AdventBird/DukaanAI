@@ -219,7 +219,6 @@ model StockMovement {
   @@index([storeId, movementType])
   @@index([idempotencyKey])
 }
-
 // ==========================================
 // Sales & POS Domain Models (Dev 2)
 // ==========================================
@@ -307,3 +306,4 @@ model Payment {
   @@index([storeId, occurredAt])
   @@index([saleId])
 }
+
