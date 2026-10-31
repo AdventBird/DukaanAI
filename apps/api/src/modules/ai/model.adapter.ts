@@ -130,6 +130,26 @@ export class ModelAdapter {
     startTime: number,
     diagnostic: string
   ): ModelResponse {
+    const lastMsg = messages[messages.length - 1];
+    if (lastMsg && lastMsg.role === 'tool') {
+      let contentSummary = 'Tool executed successfully.';
+      try {
+        const parsed = JSON.parse(lastMsg.content || '{}');
+        contentSummary = parsed.summary || contentSummary;
+      } catch {
+        contentSummary = lastMsg.content || contentSummary;
+      }
+
+      return {
+        message: {
+          role: 'assistant',
+          content: `Here is the information from your store database:\n\n${contentSummary}`,
+        },
+        finishReason: 'stop',
+        durationMs: Date.now() - startTime,
+      };
+    }
+
     const lastUserMsg = [...messages].reverse().find((m) => m.role === 'user')?.content?.toLowerCase() || '';
 
     // If tools are available and user wants to check stock/replenishment
@@ -166,6 +186,69 @@ export class ModelAdapter {
                 type: 'function',
                 function: {
                   name: 'list_suppliers',
+                  arguments: JSON.stringify({}),
+                },
+              },
+            ],
+          },
+          finishReason: 'tool_calls',
+          durationMs: Date.now() - startTime,
+        };
+      }
+
+      if (lastUserMsg.includes('sale') || lastUserMsg.includes('revenue') || lastUserMsg.includes('sold') || lastUserMsg.includes('today') || lastUserMsg.includes('profit')) {
+        return {
+          message: {
+            role: 'assistant',
+            content: null,
+            tool_calls: [
+              {
+                id: `call_${Date.now()}_3`,
+                type: 'function',
+                function: {
+                  name: 'get_sales_overview',
+                  arguments: JSON.stringify({ period: lastUserMsg.includes('30') ? '30d' : lastUserMsg.includes('7') || lastUserMsg.includes('week') ? '7d' : 'today' }),
+                },
+              },
+            ],
+          },
+          finishReason: 'tool_calls',
+          durationMs: Date.now() - startTime,
+        };
+      }
+
+      if (lastUserMsg.includes('top') || lastUserMsg.includes('best') || lastUserMsg.includes('popular') || lastUserMsg.includes('fast')) {
+        return {
+          message: {
+            role: 'assistant',
+            content: null,
+            tool_calls: [
+              {
+                id: `call_${Date.now()}_4`,
+                type: 'function',
+                function: {
+                  name: 'get_top_selling_products',
+                  arguments: JSON.stringify({ limit: 5 }),
+                },
+              },
+            ],
+          },
+          finishReason: 'tool_calls',
+          durationMs: Date.now() - startTime,
+        };
+      }
+
+      if (lastUserMsg.includes('khata') || lastUserMsg.includes('udhar') || lastUserMsg.includes('credit') || lastUserMsg.includes('owe') || lastUserMsg.includes('pending')) {
+        return {
+          message: {
+            role: 'assistant',
+            content: null,
+            tool_calls: [
+              {
+                id: `call_${Date.now()}_5`,
+                type: 'function',
+                function: {
+                  name: 'get_khata_credit_sales',
                   arguments: JSON.stringify({}),
                 },
               },

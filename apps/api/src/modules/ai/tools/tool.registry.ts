@@ -4,6 +4,7 @@ import { ProductService } from '../../products/product.service.js';
 import { InventoryService } from '../../inventory/inventory.service.js';
 import { procurementService } from '../../procurement/procurement.service.js';
 import { supplierService } from '../../suppliers/supplier.service.js';
+import { SalesService } from '../../sales/sales.service.js';
 import { demoVoiceProvider } from '../adapters/voice.adapter.js';
 import { browserPortalAdapter } from '../adapters/browser.adapter.js';
 
@@ -340,6 +341,118 @@ export class ToolRegistry {
         return {
           summary: `Order ${po.orderNumber} successfully submitted to ${po.supplierName} portal via automated browser agent. Distributor Ref: ${portalResult.orderReference}.`,
           data: portalResult,
+        };
+      },
+    });
+
+    // 11. get_sales_overview
+    this.register({
+      name: 'get_sales_overview',
+      description: 'Get real-time sales overview including total revenue, transaction count, average basket size, and profit for today, 7d, or 30d.',
+      permission: 'READ',
+      parameters: {
+        type: 'object',
+        properties: {
+          period: { type: 'string', enum: ['today', '7d', '30d'], description: 'Time horizon for sales' },
+        },
+      },
+      execute: async (ctx, args) => {
+        const sales = new SalesService(ctx.prisma);
+        const summary = await sales.getDashboardSummary(ctx.storeId, args.period || 'today');
+        return {
+          summary: `Sales for ${args.period || 'today'}: ₹${summary.sales} across ${summary.transactions} transactions (Avg Basket: ₹${summary.averageBasket}, Gross Profit: ₹${summary.grossProfit}).`,
+          data: summary,
+        };
+      },
+    });
+
+    // 12. get_top_selling_products
+    this.register({
+      name: 'get_top_selling_products',
+      description: 'Get the fastest-moving and highest-revenue generating FMCG products in the store.',
+      permission: 'READ',
+      parameters: {
+        type: 'object',
+        properties: {
+          limit: { type: 'number', description: 'Number of top products (default 5)' },
+        },
+      },
+      execute: async (ctx, args) => {
+        const sales = new SalesService(ctx.prisma);
+        const top = await sales.getTopSellingProducts(ctx.storeId, Number(args.limit || 5));
+        const listStr = top.map((p: any, i) => `${i + 1}. ${p.name || p.productName} (${p.unitsSold} units, ₹${p.revenue})`).join(', ');
+        return {
+          summary: `Top selling products: ${listStr || 'No sales recorded yet'}.`,
+          data: top,
+        };
+      },
+    });
+
+    // 13. record_quick_expense
+    this.register({
+      name: 'record_quick_expense',
+      description: 'Log and record an operational store expense such as electricity, helper wages, tea/snacks, or transportation.',
+      permission: 'DRAFT_WRITE',
+      parameters: {
+        type: 'object',
+        properties: {
+          category: {
+            type: 'string',
+            enum: ['UTILITIES', 'WAGES', 'RENT', 'TRANSPORT', 'PACKAGING', 'MISCELLANEOUS'],
+            description: 'Category of expense',
+          },
+          amount: { type: 'number', description: 'Amount in INR (₹)' },
+          description: { type: 'string', description: 'Reason or note for expense' },
+        },
+        required: ['category', 'amount', 'description'],
+      },
+      execute: async (ctx, args) => {
+        const amountNum = Number(args.amount);
+        if (!amountNum || amountNum <= 0) {
+          throw new Error('Expense amount must be a positive number.');
+        }
+        const created = await ctx.prisma.expense.create({
+          data: {
+            storeId: ctx.storeId,
+            category: String(args.category),
+            amount: amountNum.toFixed(2),
+            currency: 'INR',
+            description: String(args.description || 'Quick expense recorded via DukaanAI Chatbot'),
+            occurredAt: new Date(),
+            createdById: ctx.userId,
+          },
+        });
+        return {
+          summary: `Recorded ₹${created.amount} expense for ${created.category} (${created.description}).`,
+          data: created,
+        };
+      },
+    });
+
+    // 14. get_khata_credit_sales
+    this.register({
+      name: 'get_khata_credit_sales',
+      description: 'Get outstanding customer credit (Khata / Udhar) balances and recent credit invoices.',
+      permission: 'READ',
+      parameters: {
+        type: 'object',
+        properties: {
+          search: { type: 'string', description: 'Optional customer name or phone filter' },
+        },
+      },
+      execute: async (ctx, args) => {
+        const sales = new SalesService(ctx.prisma);
+        const res = await sales.listSales(ctx.storeId, {
+          paymentMethod: 'CREDIT',
+          search: args.search,
+          pageSize: 10,
+        });
+        const items = res.items || [];
+        const totalPending = items.reduce((acc, s) => acc + Number(s.balanceDue || 0), 0);
+        const customerList = items.map((s) => `${s.customerLabel}: ₹${s.balanceDue} (${s.receiptNumber})`).join(', ');
+        return {
+          summary: `Found ${res.total} credit (Udhar) invoices totaling ₹${totalPending.toFixed(2)} pending balance. Active balances: ${customerList}.`,
+          data: { totalInvoices: res.total, totalPendingBalance: totalPending.toFixed(2), items },
         };
       },
     });

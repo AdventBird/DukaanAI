@@ -213,6 +213,28 @@ RULES:
                   label: `Voice negotiation with ${toolData.supplierName} (${toolData.language})`,
                   data: toolData,
                 });
+              } else if (tool.name === 'get_top_selling_products' && Array.isArray(toolData)) {
+                toolData.forEach((it: any) => {
+                  evidenceItems.push({
+                    type: 'INVENTORY_PRODUCT',
+                    id: it.productId,
+                    label: `${it.name || it.productName} (${it.unitsSold} units sold, ₹${it.revenue})`,
+                  });
+                });
+              } else if (tool.name === 'get_sales_overview' && toolData) {
+                evidenceItems.push({
+                  type: 'INVENTORY_PRODUCT',
+                  id: `sales-${toolData.period}`,
+                  label: `Sales ₹${toolData.sales} (${toolData.transactions} bills, Profit ₹${toolData.grossProfit})`,
+                });
+              } else if (tool.name === 'get_khata_credit_sales' && toolData?.items && Array.isArray(toolData.items)) {
+                toolData.items.slice(0, 5).forEach((s: any) => {
+                  evidenceItems.push({
+                    type: 'INVENTORY_PRODUCT',
+                    id: s.id,
+                    label: `${s.customerLabel}: ₹${s.balanceDue} due (${s.receiptNumber})`,
+                  });
+                });
               }
             } catch (execErr: any) {
               toolResultSummary = `Execution failed: ${execErr.message}`;

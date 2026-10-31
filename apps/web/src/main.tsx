@@ -11,6 +11,7 @@ import { POSPage } from './features/pos/POSPage.js';
 import { SalesPage } from './features/sales/SalesPage.js';
 import { AnalyticsPage } from './features/analytics/AnalyticsPage.js';
 import { AIPage } from './features/ai/AIPage.js';
+import { FloatingChatWidget } from './components/FloatingChatWidget.js';
 
 const nav = [
   { label: 'Overview', path: '/dashboard', icon: LayoutDashboard },
@@ -257,6 +258,7 @@ function App() {
           ))}
         <Route path="*" element={<Navigate to="/dashboard" replace />} />
       </Routes>
+      <FloatingChatWidget />
     </Shell>
   );
 }
