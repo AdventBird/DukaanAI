@@ -1,0 +1,9 @@
+{
+  "name": "DukaanAI Store Operations",
+  "short_name": "DukaanAI",
+  "description": "Your kirana store operations dashboard",
+  "start_url": "/dashboard",
+  "display": "standalone",
+  "background_color": "#f4f7f5",
+  "theme_color": "#176b57"
+}

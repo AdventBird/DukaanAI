@@ -1,0 +1,20 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-dukaanai}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-dukaanai}
+      POSTGRES_DB: ${POSTGRES_DB:-dukaanai}
+    ports:
+      - "5432:5432"
+    volumes:
+      - dukaanai-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-dukaanai} -d ${POSTGRES_DB:-dukaanai}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  dukaanai-postgres:

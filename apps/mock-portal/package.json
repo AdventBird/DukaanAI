@@ -1,0 +1,1 @@
+{ "name": "@dukaanai/mock-portal", "version": "0.1.0", "private": true, "scripts": { "build": "node -e \"console.log('Mock distributor portal implementation is owned by Dev 3')\"", "dev": "node -e \"console.log('Mock distributor portal implementation is owned by Dev 3')\"" } }
