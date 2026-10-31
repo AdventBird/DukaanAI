@@ -2,7 +2,10 @@
   "name": "dukaanai",
   "private": true,
   "version": "0.1.0",
-  "workspaces": ["apps/*", "packages/*"],
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
   "scripts": {
     "dev": "concurrently -k -n api,web -c green,cyan \"npm run dev:api\" \"npm run dev:web\"",
     "dev:web": "npm run dev --workspace @dukaanai/web",
@@ -17,9 +20,13 @@
     "db:studio": "prisma studio --schema database/prisma/schema.prisma"
   },
   "postinstall": "npm run db:generate",
-  "dependencies": { "@prisma/client": "^6.16.2", "dotenv": "^16.6.1" },
+  "dependencies": {
+    "@prisma/client": "^6.16.2",
+    "dotenv": "^16.6.1"
+  },
   "devDependencies": {
     "concurrently": "^9.2.1",
+    "effect": "^4.1.1",
     "prisma": "^6.16.2",
     "tsx": "^4.20.5",
     "typescript": "^5.9.2"
