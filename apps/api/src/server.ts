@@ -2,7 +2,7 @@ import 'dotenv/config';
 import cors from 'cors';
 import express, { type ErrorRequestHandler, type Request, type Response } from 'express';
 import { randomUUID } from 'node:crypto';
-import { Prisma, PrismaClient } from '@prisma/client';
+import { PrismaClient } from '@prisma/client';
 import { createExpenseSchema, errorEnvelope, successEnvelope, type AuthContext } from '@dukaanai/shared';
 
 const app = express();
@@ -116,7 +116,8 @@ app.post('/api/finance/expenses', async (req, res, next) => {
         storeId: auth.storeId,
         category: parsed.data.category,
         description: parsed.data.description,
-        amount: new Prisma.Decimal(parsed.data.amount),
+        // Keep monetary input as a decimal string; Prisma writes it to NUMERIC without float conversion.
+        amount: parsed.data.amount,
         currency: parsed.data.currency,
         occurredAt: new Date(parsed.data.occurredAt),
         createdById: auth.userId,
