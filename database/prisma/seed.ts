@@ -1,521 +1,601 @@
 import 'dotenv/config';
-import { PrismaClient, Prisma, StockUnit, StockMovementType } from '@prisma/client';
+import { PrismaClient, StockMovementType, StockUnit, SaleStatus, PaymentMethod, PaymentStatus } from '@prisma/client';
 
 const prisma = new PrismaClient();
 
-interface DemoProductSeed {
-  sku?: string;
-  name: string;
-  brand?: string;
-  categoryName: string;
-  stockUnit: StockUnit;
-  purchasePackLabel?: string;
-  unitsPerPurchasePack?: string;
-  mrp?: string;
-  sellingPrice: string;
-  purchaseCost?: string;
-  reorderLevel: string;
-  initialStock: string;
-  barcode?: string;
-}
-
-const demoProducts: DemoProductSeed[] = [
-  // Packaged Foods & Snacks
-  {
-    name: 'Maggi 2-Minute Noodles 70g',
-    brand: 'Nestle',
-    categoryName: 'Packaged Foods & Snacks',
-    stockUnit: 'PIECE',
-    purchasePackLabel: 'Carton (96 pcs)',
-    unitsPerPurchasePack: '96',
-    mrp: '14.00',
-    sellingPrice: '13.00',
-    purchaseCost: '11.20',
-    reorderLevel: '24',
-    initialStock: '48',
-    barcode: '8901058852309',
-  },
-  {
-    name: 'Parle-G Gold Biscuits 100g',
-    brand: 'Parle',
-    categoryName: 'Packaged Foods & Snacks',
-    stockUnit: 'PIECE',
-    purchasePackLabel: 'Carton (120 pcs)',
-    unitsPerPurchasePack: '120',
-    mrp: '10.00',
-    sellingPrice: '10.00',
-    purchaseCost: '8.50',
-    reorderLevel: '30',
-    initialStock: '60',
-    barcode: '8901719101038',
-  },
-  {
-    name: 'Good Day Cashew Cookies 100g',
-    brand: 'Britannia',
-    categoryName: 'Packaged Foods & Snacks',
-    stockUnit: 'PIECE',
-    mrp: '25.00',
-    sellingPrice: '24.00',
-    purchaseCost: '20.00',
-    reorderLevel: '20',
-    initialStock: '8', // Low stock!
-    barcode: '8901063012118',
-  },
-  {
-    name: "Lay's India's Magic Masala 50g",
-    brand: "Lay's",
-    categoryName: 'Packaged Foods & Snacks',
-    stockUnit: 'PIECE',
-    mrp: '20.00',
-    sellingPrice: '20.00',
-    purchaseCost: '16.50',
-    reorderLevel: '15',
-    initialStock: '30',
-    barcode: '8901491101831',
-  },
-  {
-    name: "Haldiram's Bhujia Sev 200g",
-    brand: "Haldiram's",
-    categoryName: 'Packaged Foods & Snacks',
-    stockUnit: 'PIECE',
-    mrp: '55.00',
-    sellingPrice: '52.00',
-    purchaseCost: '44.00',
-    reorderLevel: '12',
-    initialStock: '20',
-    barcode: '8904004400511',
-  },
-  {
-    name: 'Kissan Fresh Tomato Ketchup 500g',
-    brand: 'Kissan',
-    categoryName: 'Packaged Foods & Snacks',
-    stockUnit: 'PIECE',
-    mrp: '120.00',
-    sellingPrice: '110.00',
-    purchaseCost: '95.00',
-    reorderLevel: '8',
-    initialStock: '4', // Low stock!
-    barcode: '8901030382218',
-  },
-
-  // Dairy & Breakfast
-  {
-    name: 'Amul Taaza Homogenised Toned Milk 1L',
-    brand: 'Amul',
-    categoryName: 'Dairy & Breakfast',
-    stockUnit: 'LITRE',
-    purchasePackLabel: 'Crate (12 pcs)',
-    unitsPerPurchasePack: '12',
-    mrp: '74.00',
-    sellingPrice: '72.00',
-    purchaseCost: '66.00',
-    reorderLevel: '10',
-    initialStock: '25',
-    barcode: '8901262010053',
-  },
-  {
-    name: 'Amul Butter 100g',
-    brand: 'Amul',
-    categoryName: 'Dairy & Breakfast',
-    stockUnit: 'PIECE',
-    mrp: '58.00',
-    sellingPrice: '56.00',
-    purchaseCost: '50.00',
-    reorderLevel: '15',
-    initialStock: '12', // Low stock!
-    barcode: '8901262010107',
-  },
-  {
-    name: 'Mother Dairy Cow Milk Paneer 200g',
-    brand: 'Mother Dairy',
-    categoryName: 'Dairy & Breakfast',
-    stockUnit: 'PIECE',
-    mrp: '90.00',
-    sellingPrice: '88.00',
-    purchaseCost: '78.00',
-    reorderLevel: '8',
-    initialStock: '15',
-    barcode: '8901648001019',
-  },
-  {
-    name: "Kellogg's Corn Flakes 475g",
-    brand: "Kellogg's",
-    categoryName: 'Dairy & Breakfast',
-    stockUnit: 'PIECE',
-    mrp: '195.00',
-    sellingPrice: '180.00',
-    purchaseCost: '155.00',
-    reorderLevel: '6',
-    initialStock: '10',
-    barcode: '8901499008026',
-  },
-
-  // Staples & Grains
-  {
-    name: 'Tata Salt Vacuum Evaporated 1kg',
-    brand: 'Tata',
-    categoryName: 'Staples & Grains',
-    stockUnit: 'PIECE',
-    purchasePackLabel: 'Bag (25 pcs)',
-    unitsPerPurchasePack: '25',
-    mrp: '28.00',
-    sellingPrice: '26.00',
-    purchaseCost: '22.00',
-    reorderLevel: '25',
-    initialStock: '50',
-    barcode: '8904004400016',
-  },
-  {
-    name: 'Aashirvaad Shudh Chakki Atta 5kg',
-    brand: 'Aashirvaad',
-    categoryName: 'Staples & Grains',
-    stockUnit: 'PIECE',
-    mrp: '265.00',
-    sellingPrice: '250.00',
-    purchaseCost: '225.00',
-    reorderLevel: '10',
-    initialStock: '18',
-    barcode: '8901725121112',
-  },
-  {
-    name: 'Fortune Sunlite Refined Sunflower Oil 1L',
-    brand: 'Fortune',
-    categoryName: 'Staples & Grains',
-    stockUnit: 'PIECE',
-    purchasePackLabel: 'Carton (12 pcs)',
-    unitsPerPurchasePack: '12',
-    mrp: '145.00',
-    sellingPrice: '138.00',
-    purchaseCost: '122.00',
-    reorderLevel: '12',
-    initialStock: '6', // Low stock!
-    barcode: '8906007280014',
-  },
-  {
-    name: 'Loose Basmati Rice (Premium)',
-    categoryName: 'Staples & Grains',
-    stockUnit: 'KG',
-    mrp: '120.00',
-    sellingPrice: '110.00',
-    purchaseCost: '92.00',
-    reorderLevel: '50',
-    initialStock: '85.500',
-  },
-  {
-    name: 'Loose Toor Dal (Desi)',
-    categoryName: 'Staples & Grains',
-    stockUnit: 'KG',
-    mrp: '160.00',
-    sellingPrice: '155.00',
-    purchaseCost: '135.00',
-    reorderLevel: '30',
-    initialStock: '15.200', // Low stock!
-  },
-  {
-    name: 'Loose Sugar (Medium Grain)',
-    categoryName: 'Staples & Grains',
-    stockUnit: 'KG',
-    mrp: '46.00',
-    sellingPrice: '44.00',
-    purchaseCost: '39.00',
-    reorderLevel: '100',
-    initialStock: '240.000',
-  },
-  {
-    name: 'Loose Chana Dal',
-    categoryName: 'Staples & Grains',
-    stockUnit: 'KG',
-    mrp: '95.00',
-    sellingPrice: '90.00',
-    purchaseCost: '76.00',
-    reorderLevel: '25',
-    initialStock: '40.000',
-  },
-
-  // Beverages
-  {
-    name: 'Red Label Tea 250g',
-    brand: 'Brooke Bond',
-    categoryName: 'Beverages',
-    stockUnit: 'PIECE',
-    mrp: '130.00',
-    sellingPrice: '125.00',
-    purchaseCost: '108.00',
-    reorderLevel: '10',
-    initialStock: '20',
-    barcode: '8901030383017',
-  },
-  {
-    name: 'Bru Instant Coffee 50g',
-    brand: 'Bru',
-    categoryName: 'Beverages',
-    stockUnit: 'PIECE',
-    mrp: '90.00',
-    sellingPrice: '85.00',
-    purchaseCost: '72.00',
-    reorderLevel: '8',
-    initialStock: '5', // Low stock!
-    barcode: '8901030384014',
-  },
-  {
-    name: 'Coca-Cola Original 750ml PET',
-    brand: 'Coca-Cola',
-    categoryName: 'Beverages',
-    stockUnit: 'PIECE',
-    purchasePackLabel: 'Crate (24 pcs)',
-    unitsPerPurchasePack: '24',
-    mrp: '40.00',
-    sellingPrice: '40.00',
-    purchaseCost: '32.00',
-    reorderLevel: '24',
-    initialStock: '48',
-    barcode: '8901764012013',
-  },
-  {
-    name: 'Frooti Mango Drink 160ml Tetra',
-    brand: 'Parle Agro',
-    categoryName: 'Beverages',
-    stockUnit: 'PIECE',
-    purchasePackLabel: 'Carton (40 pcs)',
-    unitsPerPurchasePack: '40',
-    mrp: '10.00',
-    sellingPrice: '10.00',
-    purchaseCost: '8.20',
-    reorderLevel: '30',
-    initialStock: '60',
-    barcode: '8901719114014',
-  },
-
-  // Personal Care & Hygiene
-  {
-    name: 'Dettol Original Bathing Soap 75g',
-    brand: 'Dettol',
-    categoryName: 'Personal Care & Hygiene',
-    stockUnit: 'PIECE',
-    mrp: '38.00',
-    sellingPrice: '36.00',
-    purchaseCost: '30.00',
-    reorderLevel: '15',
-    initialStock: '25',
-    barcode: '8901396112111',
-  },
-  {
-    name: 'Lifebuoy Total Soap 125g',
-    brand: 'Lifebuoy',
-    categoryName: 'Personal Care & Hygiene',
-    stockUnit: 'PIECE',
-    mrp: '42.00',
-    sellingPrice: '40.00',
-    purchaseCost: '34.00',
-    reorderLevel: '15',
-    initialStock: '7', // Low stock!
-    barcode: '8901030342014',
-  },
-  {
-    name: 'Colgate Strong Teeth Toothpaste 150g',
-    brand: 'Colgate',
-    categoryName: 'Personal Care & Hygiene',
-    stockUnit: 'PIECE',
-    mrp: '110.00',
-    sellingPrice: '102.00',
-    purchaseCost: '88.00',
-    reorderLevel: '12',
-    initialStock: '22',
-    barcode: '8901314010529',
-  },
-  {
-    name: 'Clinic Plus Strong & Long Shampoo 80ml',
-    brand: 'Clinic Plus',
-    categoryName: 'Personal Care & Hygiene',
-    stockUnit: 'PIECE',
-    mrp: '55.00',
-    sellingPrice: '52.00',
-    purchaseCost: '43.00',
-    reorderLevel: '10',
-    initialStock: '18',
-    barcode: '8901030351016',
-  },
-  {
-    name: 'Whisper Choice Regular Sanitary Pads (6s)',
-    brand: 'Whisper',
-    categoryName: 'Personal Care & Hygiene',
-    stockUnit: 'PIECE',
-    mrp: '36.00',
-    sellingPrice: '34.00',
-    purchaseCost: '28.00',
-    reorderLevel: '15',
-    initialStock: '30',
-    barcode: '8901314502017',
-  },
-
-  // Household & Cleaning
-  {
-    name: 'Surf Excel Quick Wash Detergent Powder 1kg',
-    brand: 'Surf Excel',
-    categoryName: 'Household & Cleaning',
-    stockUnit: 'PIECE',
-    mrp: '145.00',
-    sellingPrice: '138.00',
-    purchaseCost: '118.00',
-    reorderLevel: '10',
-    initialStock: '16',
-    barcode: '8901030361015',
-  },
-  {
-    name: 'Vim Dishwash Bar 135g',
-    brand: 'Vim',
-    categoryName: 'Household & Cleaning',
-    stockUnit: 'PIECE',
-    mrp: '10.00',
-    sellingPrice: '10.00',
-    purchaseCost: '8.20',
-    reorderLevel: '30',
-    initialStock: '45',
-    barcode: '8901030371014',
-  },
-  {
-    name: 'Harpic Power Plus Disinfectant Toilet Cleaner 500ml',
-    brand: 'Harpic',
-    categoryName: 'Household & Cleaning',
-    stockUnit: 'PIECE',
-    mrp: '95.00',
-    sellingPrice: '90.00',
-    purchaseCost: '75.00',
-    reorderLevel: '8',
-    initialStock: '3', // Low stock!
-    barcode: '8901396131013',
-  },
-  {
-    name: 'Good Knight Gold Flash Liquid Mosquito Refill',
-    brand: 'Good Knight',
-    categoryName: 'Household & Cleaning',
-    stockUnit: 'PIECE',
-    mrp: '85.00',
-    sellingPrice: '80.00',
-    purchaseCost: '68.00',
-    reorderLevel: '12',
-    initialStock: '18',
-    barcode: '8901023015015',
-  },
-];
-
 async function main() {
+  console.log('--- Seeding real Indian Kirana Store data into Supabase ---');
+
+  // 1. Store
   const store = await prisma.store.upsert({
     where: { id: 'demo-store' },
-    update: {},
+    update: { name: 'Shree Ganesh Kirana & General Store' },
     create: {
       id: 'demo-store',
-      name: 'Kirana Store (Demo)',
+      name: 'Shree Ganesh Kirana & General Store',
       currency: 'INR',
       timezone: 'Asia/Kolkata',
       isDemo: true,
     },
   });
+  console.log(`✓ Store configured: "${store.name}" (${store.id})`);
 
+  // 2. Users (Owner & Staff)
   await prisma.user.upsert({
     where: { storeId_loginId: { storeId: store.id, loginId: 'demo-owner' } },
-    update: {},
+    update: { displayName: 'Ramesh Kumar (Owner)' },
     create: {
       id: 'demo-owner',
       storeId: store.id,
-      displayName: 'Demo Owner',
+      displayName: 'Ramesh Kumar (Owner)',
       loginId: 'demo-owner',
       role: 'OWNER',
     },
   });
 
-  console.log('Demo store and owner verified.');
+  await prisma.user.upsert({
+    where: { storeId_loginId: { storeId: store.id, loginId: 'cashier-1' } },
+    update: { displayName: 'Suresh Patel (Cashier)' },
+    create: {
+      id: 'cashier-1',
+      storeId: store.id,
+      displayName: 'Suresh Patel (Cashier)',
+      loginId: 'cashier-1',
+      role: 'CASHIER',
+    },
+  });
+  console.log('✓ Users configured: demo-owner, cashier-1');
 
-  // Collect unique category names
-  const categoryNames = Array.from(new Set(demoProducts.map((p) => p.categoryName)));
-  const categoryMap = new Map<string, string>();
+  // 3. Categories
+  const categoriesData = [
+    { id: 'cat-dairy', name: 'Dairy & Breakfast' },
+    { id: 'cat-staples', name: 'Staples: Atta, Rice & Dal' },
+    { id: 'cat-oils', name: 'Cooking Oils & Ghee' },
+    { id: 'cat-snacks', name: 'Packaged Snacks & Biscuits' },
+    { id: 'cat-spices', name: 'Spices, Salt & Masalas' },
+    { id: 'cat-beverages', name: 'Beverages & Chai' },
+    { id: 'cat-personal', name: 'Personal Care & Soaps' },
+    { id: 'cat-household', name: 'Household & Cleaning' },
+  ];
 
-  for (const catName of categoryNames) {
-    const category = await prisma.category.upsert({
-      where: { storeId_name: { storeId: store.id, name: catName } },
+  for (const cat of categoriesData) {
+    await prisma.category.upsert({
+      where: { storeId_name: { storeId: store.id, name: cat.name } },
       update: {},
-      create: { storeId: store.id, name: catName },
+      create: { id: cat.id, storeId: store.id, name: cat.name },
     });
-    categoryMap.set(catName, category.id);
   }
-  console.log(`Seeded ${categoryMap.size} product categories.`);
+  console.log(`✓ ${categoriesData.length} Kirana categories created`);
 
-  let seededCount = 0;
-  for (const item of demoProducts) {
-    const categoryId = categoryMap.get(item.categoryName)!;
+  // 4. Products with Barcodes & Starting Stock
+  const productsData = [
+    {
+      id: 'prod-amul-milk',
+      categoryId: 'cat-dairy',
+      sku: 'AMUL-TZ-1L',
+      name: 'Amul Taaza Homogenised Toned Milk 1L',
+      brand: 'Amul',
+      description: 'Long life UHT treated toned milk, 3.0% fat, 8.5% SNF',
+      stockUnit: StockUnit.PACKET,
+      purchasePackLabel: 'Crate (12 pouches)',
+      unitsPerPurchasePack: '12',
+      mrp: '56.00',
+      sellingPrice: '56.00',
+      purchaseCost: '51.50',
+      reorderLevel: '24',
+      barcode: '8901262010054',
+      openingStock: '36',
+    },
+    {
+      id: 'prod-amul-butter',
+      categoryId: 'cat-dairy',
+      sku: 'AMUL-BTR-500G',
+      name: 'Amul Butter Pasteurised 500g',
+      brand: 'Amul',
+      description: 'Utterly butterly delicious salted pasteurised butter block',
+      stockUnit: StockUnit.BOX,
+      purchasePackLabel: 'Carton (20 blocks)',
+      unitsPerPurchasePack: '20',
+      mrp: '285.00',
+      sellingPrice: '275.00',
+      purchaseCost: '248.00',
+      reorderLevel: '10',
+      barcode: '8901262010108',
+      openingStock: '8', // Low stock!
+    },
+    {
+      id: 'prod-aashirvaad-atta',
+      categoryId: 'cat-staples',
+      sku: 'AASH-ATTA-5KG',
+      name: 'Aashirvaad Superior MP Chakki Atta 5kg',
+      brand: 'ITC Aashirvaad',
+      description: '100% whole wheat flour ground from MP Sehore grains',
+      stockUnit: StockUnit.PACKET,
+      purchasePackLabel: 'Bale (4 bags)',
+      unitsPerPurchasePack: '4',
+      mrp: '285.00',
+      sellingPrice: '265.00',
+      purchaseCost: '242.00',
+      reorderLevel: '10',
+      barcode: '8901030383457',
+      openingStock: '18',
+    },
+    {
+      id: 'prod-india-gate-rice',
+      categoryId: 'cat-staples',
+      sku: 'IG-ROZZ-5KG',
+      name: 'India Gate Basmati Rice Feast Rozzana 5kg',
+      brand: 'India Gate',
+      description: 'Aged long-grain aromatic basmati rice for daily cooking',
+      stockUnit: StockUnit.PACKET,
+      purchasePackLabel: 'Bale (4 bags)',
+      unitsPerPurchasePack: '4',
+      mrp: '495.00',
+      sellingPrice: '420.00',
+      purchaseCost: '375.00',
+      reorderLevel: '6',
+      barcode: '8906001020300',
+      openingStock: '12',
+    },
+    {
+      id: 'prod-tata-toor-dal',
+      categoryId: 'cat-staples',
+      sku: 'TATA-TOOR-1KG',
+      name: 'Tata Sampann Unpolished Toor Dal 1kg',
+      brand: 'Tata Sampann',
+      description: 'Rich in natural protein, water-polished unpolished arhar dal',
+      stockUnit: StockUnit.PACKET,
+      purchasePackLabel: 'Bag (20 packs)',
+      unitsPerPurchasePack: '20',
+      mrp: '185.00',
+      sellingPrice: '172.00',
+      purchaseCost: '152.00',
+      reorderLevel: '10',
+      barcode: '8904004403333',
+      openingStock: '15',
+    },
+    {
+      id: 'prod-fortune-oil',
+      categoryId: 'cat-oils',
+      sku: 'FORT-SUN-1L',
+      name: 'Fortune Sunlite Refined Sunflower Oil 1L Pouch',
+      brand: 'Fortune',
+      description: 'Light and healthy edible cooking oil enriched with vitamins A & D',
+      stockUnit: StockUnit.PACKET,
+      purchasePackLabel: 'Carton (15 pouches)',
+      unitsPerPurchasePack: '15',
+      mrp: '155.00',
+      sellingPrice: '138.00',
+      purchaseCost: '124.00',
+      reorderLevel: '15',
+      barcode: '8906007280234',
+      openingStock: '30',
+    },
+    {
+      id: 'prod-saffola-gold',
+      categoryId: 'cat-oils',
+      sku: 'SAFF-GOLD-1L',
+      name: 'Saffola Gold Pro Healthy Lifestyle Blended Oil 1L',
+      brand: 'Saffola',
+      description: 'Rice bran and sunflower oil blend with Losorb technology',
+      stockUnit: StockUnit.PIECE,
+      purchasePackLabel: 'Box (12 bottles)',
+      unitsPerPurchasePack: '12',
+      mrp: '195.00',
+      sellingPrice: '178.00',
+      purchaseCost: '158.00',
+      reorderLevel: '8',
+      barcode: '8901088012345',
+      openingStock: '5', // Low stock!
+    },
+    {
+      id: 'prod-tata-salt',
+      categoryId: 'cat-spices',
+      sku: 'TATA-SALT-1KG',
+      name: 'Tata Salt Vacuum Evaporated Iodised Salt 1kg',
+      brand: 'Tata Salt',
+      description: 'Desh Ka Namak, vacuum evaporated pure white iodised cooking salt',
+      stockUnit: StockUnit.PACKET,
+      purchasePackLabel: 'Bag (25 packets)',
+      unitsPerPurchasePack: '25',
+      mrp: '30.00',
+      sellingPrice: '28.00',
+      purchaseCost: '23.50',
+      reorderLevel: '25',
+      barcode: '8904004400301',
+      openingStock: '45',
+    },
+    {
+      id: 'prod-everest-haldi',
+      categoryId: 'cat-spices',
+      sku: 'EVR-HLD-200G',
+      name: 'Everest Turmeric / Haldi Powder 200g Box',
+      brand: 'Everest',
+      description: 'High-curcumin aromatic ground turmeric spice',
+      stockUnit: StockUnit.PACKET,
+      purchasePackLabel: 'Master Carton (50 boxes)',
+      unitsPerPurchasePack: '50',
+      mrp: '62.00',
+      sellingPrice: '58.00',
+      purchaseCost: '49.00',
+      reorderLevel: '15',
+      barcode: '8901786101010',
+      openingStock: '22',
+    },
+    {
+      id: 'prod-parle-g',
+      categoryId: 'cat-snacks',
+      sku: 'PARLE-G-1KG',
+      name: 'Parle-G Gold Glucose Biscuits 1kg Family Pack',
+      brand: 'Parle',
+      description: 'Classic crisp glucose tea-time biscuits with milk and wheat',
+      stockUnit: StockUnit.PACKET,
+      purchasePackLabel: 'Box (12 packs)',
+      unitsPerPurchasePack: '12',
+      mrp: '140.00',
+      sellingPrice: '130.00',
+      purchaseCost: '118.00',
+      reorderLevel: '8',
+      barcode: '8901719114321',
+      openingStock: '14',
+    },
+    {
+      id: 'prod-maggi-noodles',
+      categoryId: 'cat-snacks',
+      sku: 'MAGGI-MAS-70G',
+      name: 'Maggi 2-Minute Masala Instant Noodles 70g',
+      brand: 'Nestle Maggi',
+      description: 'Favorite Indian noodle with signature roasted masala tastemaker',
+      stockUnit: StockUnit.PACKET,
+      purchasePackLabel: 'Carton (96 units)',
+      unitsPerPurchasePack: '96',
+      mrp: '14.00',
+      sellingPrice: '14.00',
+      purchaseCost: '11.80',
+      reorderLevel: '48',
+      barcode: '8901058852331',
+      openingStock: '92',
+    },
+    {
+      id: 'prod-red-label-tea',
+      categoryId: 'cat-beverages',
+      sku: 'RED-LBL-500G',
+      name: 'Brooke Bond Red Label Tea 500g',
+      brand: 'Brooke Bond',
+      description: 'Strong CTC black tea granules for daily masala chai',
+      stockUnit: StockUnit.PACKET,
+      purchasePackLabel: 'Case (20 packs)',
+      unitsPerPurchasePack: '20',
+      mrp: '290.00',
+      sellingPrice: '260.00',
+      purchaseCost: '235.00',
+      reorderLevel: '10',
+      barcode: '8901030018441',
+      openingStock: '16',
+    },
+    {
+      id: 'prod-nescafe-classic',
+      categoryId: 'cat-beverages',
+      sku: 'NESC-CL-50G',
+      name: 'Nescafe Classic 100% Pure Instant Coffee 50g Glass Jar',
+      brand: 'Nestle Nescafe',
+      description: 'Roasted Robusta and Arabica coffee granules',
+      stockUnit: StockUnit.BOX,
+      purchasePackLabel: 'Case (24 jars)',
+      unitsPerPurchasePack: '24',
+      mrp: '195.00',
+      sellingPrice: '185.00',
+      purchaseCost: '162.00',
+      reorderLevel: '8',
+      barcode: '8901058850023',
+      openingStock: '4', // Low stock!
+    },
+    {
+      id: 'prod-surf-excel',
+      categoryId: 'cat-household',
+      sku: 'SURF-QW-1KG',
+      name: 'Surf Excel Quick Wash Detergent Powder 1kg',
+      brand: 'Surf Excel',
+      description: 'Premium stain removing washing powder with pleasant fragrance',
+      stockUnit: StockUnit.PACKET,
+      purchasePackLabel: 'Sack (10 bags)',
+      unitsPerPurchasePack: '10',
+      mrp: '160.00',
+      sellingPrice: '145.00',
+      purchaseCost: '128.00',
+      reorderLevel: '10',
+      barcode: '8901030025340',
+      openingStock: '24',
+    },
+    {
+      id: 'prod-dettol-soap',
+      categoryId: 'cat-personal',
+      sku: 'DETT-SOAP-4X',
+      name: 'Dettol Original Bathing Soap 75g (Pack of 4)',
+      brand: 'Dettol',
+      description: 'Germ protection antibacterial bathing bar soap pack',
+      stockUnit: StockUnit.BOX,
+      purchasePackLabel: 'Case (24 sets)',
+      unitsPerPurchasePack: '24',
+      mrp: '190.00',
+      sellingPrice: '170.00',
+      purchaseCost: '148.00',
+      reorderLevel: '6',
+      barcode: '8901396120448',
+      openingStock: '12',
+    },
+  ];
 
-    // Check if product already exists by name in store
-    let product = await prisma.product.findFirst({
-      where: { storeId: store.id, name: item.name },
+  for (const item of productsData) {
+    // Upsert product
+    const product = await prisma.product.upsert({
+      where: { storeId_sku: { storeId: store.id, sku: item.sku } },
+      update: {
+        name: item.name,
+        brand: item.brand,
+        categoryId: item.categoryId,
+        description: item.description,
+        stockUnit: item.stockUnit,
+        purchasePackLabel: item.purchasePackLabel,
+        unitsPerPurchasePack: item.unitsPerPurchasePack,
+        mrp: item.mrp,
+        sellingPrice: item.sellingPrice,
+        purchaseCost: item.purchaseCost,
+        reorderLevel: item.reorderLevel,
+      },
+      create: {
+        id: item.id,
+        storeId: store.id,
+        sku: item.sku,
+        name: item.name,
+        brand: item.brand,
+        categoryId: item.categoryId,
+        description: item.description,
+        stockUnit: item.stockUnit,
+        purchasePackLabel: item.purchasePackLabel,
+        unitsPerPurchasePack: item.unitsPerPurchasePack,
+        mrp: item.mrp,
+        sellingPrice: item.sellingPrice,
+        purchaseCost: item.purchaseCost,
+        reorderLevel: item.reorderLevel,
+      },
     });
 
-    if (!product) {
-      product = await prisma.product.create({
+    // Upsert primary barcode
+    await prisma.productBarcode.upsert({
+      where: { storeId_barcode: { storeId: store.id, barcode: item.barcode } },
+      update: {},
+      create: {
+        storeId: store.id,
+        productId: product.id,
+        barcode: item.barcode,
+        symbology: 'EAN-13',
+        isPrimary: true,
+      },
+    });
+
+    // Upsert inventory balance
+    await prisma.inventoryBalance.upsert({
+      where: { storeId_productId: { storeId: store.id, productId: product.id } },
+      update: { quantityOnHand: item.openingStock },
+      create: {
+        storeId: store.id,
+        productId: product.id,
+        quantityOnHand: item.openingStock,
+      },
+    });
+
+    // Record stock opening movement
+    const idempotencyKey = `opening-${store.id}-${product.id}`;
+    const existingMovement = await prisma.stockMovement.findUnique({ where: { idempotencyKey } });
+    if (!existingMovement) {
+      await prisma.stockMovement.create({
         data: {
           storeId: store.id,
-          sku: item.sku,
-          name: item.name,
-          brand: item.brand,
-          categoryId,
-          stockUnit: item.stockUnit,
-          purchasePackLabel: item.purchasePackLabel,
-          unitsPerPurchasePack: item.unitsPerPurchasePack ? new Prisma.Decimal(item.unitsPerPurchasePack) : null,
-          mrp: item.mrp ? new Prisma.Decimal(item.mrp) : null,
-          sellingPrice: new Prisma.Decimal(item.sellingPrice),
-          purchaseCost: item.purchaseCost ? new Prisma.Decimal(item.purchaseCost) : null,
-          reorderLevel: new Prisma.Decimal(item.reorderLevel),
-          isActive: true,
+          productId: product.id,
+          movementType: StockMovementType.OPENING,
+          quantityDelta: item.openingStock,
+          unit: item.stockUnit,
+          reason: 'Initial verified stock intake',
+          idempotencyKey,
+          actorType: 'OWNER',
+          actorId: 'demo-owner',
         },
       });
+    }
+  }
+  console.log(`✓ ${productsData.length} Real FMCG products, barcodes, and inventory balances seeded`);
 
-      // Link barcode if present
-      if (item.barcode) {
-        await prisma.productBarcode.create({
-          data: {
-            storeId: store.id,
-            productId: product.id,
-            barcode: item.barcode,
-            isPrimary: true,
-          },
-        });
-      }
+  // 5. Real POS Completed Sales & Receipts
+  const salesData = [
+    {
+      receiptNumber: 'BILL-20261031-001',
+      customerLabel: 'Walk-in Cash Customer',
+      paymentMethod: PaymentMethod.CASH,
+      subtotal: '270.00',
+      discount: '0.00',
+      total: '270.00',
+      amountPaid: '300.00',
+      changeDue: '30.00',
+      completedAt: new Date('2026-10-31T09:30:00+05:30'),
+      items: [
+        { productId: 'prod-amul-milk', name: 'Amul Taaza Homogenised Toned Milk 1L', barcode: '8901262010054', unit: 'PACKET', qty: '2', price: '56.00', cost: '51.50', lineTotal: '112.00' },
+        { productId: 'prod-tata-salt', name: 'Tata Salt Vacuum Evaporated Iodised Salt 1kg', barcode: '8904004400301', unit: 'PACKET', qty: '1', price: '28.00', cost: '23.50', lineTotal: '28.00' },
+        { productId: 'prod-parle-g', name: 'Parle-G Gold Glucose Biscuits 1kg Family Pack', barcode: '8901719114321', unit: 'PACKET', qty: '1', price: '130.00', cost: '118.00', lineTotal: '130.00' },
+      ],
+      paymentRef: 'CASH-TILL-01',
+    },
+    {
+      receiptNumber: 'BILL-20261031-002',
+      customerLabel: 'Sharmaji (Flat 302)',
+      paymentMethod: PaymentMethod.UPI,
+      subtotal: '1393.00',
+      discount: '43.00',
+      total: '1350.00',
+      amountPaid: '1350.00',
+      changeDue: '0.00',
+      completedAt: new Date('2026-10-31T11:15:00+05:30'),
+      items: [
+        { productId: 'prod-aashirvaad-atta', name: 'Aashirvaad Superior MP Chakki Atta 5kg', barcode: '8901030383457', unit: 'PACKET', qty: '1', price: '265.00', cost: '242.00', lineTotal: '265.00' },
+        { productId: 'prod-india-gate-rice', name: 'India Gate Basmati Rice Feast Rozzana 5kg', barcode: '8906001020300', unit: 'PACKET', qty: '1', price: '420.00', cost: '375.00', lineTotal: '420.00' },
+        { productId: 'prod-fortune-oil', name: 'Fortune Sunlite Refined Sunflower Oil 1L Pouch', barcode: '8906007280234', unit: 'PACKET', qty: '2', price: '138.00', cost: '124.00', lineTotal: '276.00' },
+        { productId: 'prod-tata-toor-dal', name: 'Tata Sampann Unpolished Toor Dal 1kg', barcode: '8904004403333', unit: 'PACKET', qty: '1', price: '172.00', cost: '152.00', lineTotal: '172.00' },
+        { productId: 'prod-red-label-tea', name: 'Brooke Bond Red Label Tea 500g', barcode: '8901030018441', unit: 'PACKET', qty: '1', price: '260.00', cost: '235.00', lineTotal: '260.00' },
+      ],
+      paymentRef: 'UPI/20261031/992817260199',
+    },
+    {
+      receiptNumber: 'BILL-20261031-003',
+      customerLabel: 'Amit Verma (Hostel Student)',
+      paymentMethod: PaymentMethod.UPI,
+      subtotal: '516.00',
+      discount: '0.00',
+      total: '516.00',
+      amountPaid: '516.00',
+      changeDue: '0.00',
+      completedAt: new Date('2026-10-31T17:45:00+05:30'),
+      items: [
+        { productId: 'prod-maggi-noodles', name: 'Maggi 2-Minute Masala Instant Noodles 70g', barcode: '8901058852331', unit: 'PACKET', qty: '4', price: '14.00', cost: '11.80', lineTotal: '56.00' },
+        { productId: 'prod-nescafe-classic', name: 'Nescafe Classic 100% Pure Instant Coffee 50g Glass Jar', barcode: '8901058850023', unit: 'BOX', qty: '1', price: '185.00', cost: '162.00', lineTotal: '185.00' },
+        { productId: 'prod-amul-butter', name: 'Amul Butter Pasteurised 500g', barcode: '8901262010108', unit: 'BOX', qty: '1', price: '275.00', cost: '248.00', lineTotal: '275.00' },
+      ],
+      paymentRef: 'UPI/20261031/883719204455',
+    },
+    {
+      receiptNumber: 'BILL-20261031-004',
+      customerLabel: 'Gupta Kirana Khata (#42)',
+      paymentMethod: PaymentMethod.CREDIT,
+      subtotal: '373.00',
+      discount: '0.00',
+      total: '373.00',
+      amountPaid: '0.00',
+      changeDue: '0.00',
+      completedAt: new Date('2026-10-31T19:20:00+05:30'),
+      items: [
+        { productId: 'prod-surf-excel', name: 'Surf Excel Quick Wash Detergent Powder 1kg', barcode: '8901030025340', unit: 'PACKET', qty: '1', price: '145.00', cost: '128.00', lineTotal: '145.00' },
+        { productId: 'prod-dettol-soap', name: 'Dettol Original Bathing Soap 75g (Pack of 4)', barcode: '8901396120448', unit: 'BOX', qty: '1', price: '170.00', cost: '148.00', lineTotal: '170.00' },
+        { productId: 'prod-everest-haldi', name: 'Everest Turmeric / Haldi Powder 200g Box', barcode: '8901786101010', unit: 'PACKET', qty: '1', price: '58.00', cost: '49.00', lineTotal: '58.00' },
+      ],
+      paymentRef: 'KHATA-BOOK-PAGE-42',
+    },
+  ];
 
-      // Create opening stock balance and opening stock movement atomically
-      const initialQty = new Prisma.Decimal(item.initialStock);
-      await prisma.$transaction([
-        prisma.inventoryBalance.create({
-          data: {
-            storeId: store.id,
-            productId: product.id,
-            quantityOnHand: initialQty,
+  for (const s of salesData) {
+    const existing = await prisma.sale.findUnique({
+      where: { storeId_receiptNumber: { storeId: store.id, receiptNumber: s.receiptNumber } },
+    });
+    if (!existing) {
+      const createdSale = await prisma.sale.create({
+        data: {
+          storeId: store.id,
+          receiptNumber: s.receiptNumber,
+          status: SaleStatus.COMPLETED,
+          subtotal: s.subtotal,
+          discountTotal: s.discount,
+          total: s.total,
+          paymentStatus: PaymentStatus.COMPLETED,
+          paymentMethod: s.paymentMethod,
+          amountPaid: s.amountPaid,
+          changeDue: s.changeDue,
+          balanceDue: s.paymentMethod === PaymentMethod.CREDIT ? s.total : '0.00',
+          customerLabel: s.customerLabel,
+          idempotencyKey: `sale-${store.id}-${s.receiptNumber}`,
+          createdBy: 'cashier-1',
+          completedAt: s.completedAt,
+          items: {
+            create: s.items.map((i) => ({
+              productId: i.productId,
+              productNameSnapshot: i.name,
+              barcodeSnapshot: i.barcode,
+              stockUnitSnapshot: i.unit,
+              quantity: i.qty,
+              unitPriceSnapshot: i.price,
+              unitCostSnapshot: i.cost,
+              lineTotal: i.lineTotal,
+            })),
           },
-        }),
-        prisma.stockMovement.create({
-          data: {
-            storeId: store.id,
-            productId: product.id,
-            movementType: StockMovementType.OPENING,
-            quantityDelta: initialQty,
-            unit: item.stockUnit,
-            reason: 'Opening stock count',
-            referenceType: 'OPENING',
-            referenceId: 'demo-seed',
-            actorType: 'SYSTEM',
-            actorId: 'seed-runner',
+          payments: {
+            create: {
+              storeId: store.id,
+              method: s.paymentMethod,
+              amount: s.amountPaid,
+              status: PaymentStatus.COMPLETED,
+              reference: s.paymentRef,
+              occurredAt: s.completedAt,
+              recordedBy: 'cashier-1',
+            },
           },
-        }),
-      ]);
-
-      seededCount++;
+        },
+      });
+      console.log(`✓ Sale created: ${createdSale.receiptNumber} (${s.paymentMethod} - ₹${s.total})`);
     }
   }
 
-  console.log(`Successfully seeded ${seededCount} Kirana store products with inventory ledger.`);
+  // 6. Real Store Operational Expenses
+  const expensesData = [
+    {
+      category: 'Electricity & Utilities',
+      description: 'BSES monthly shop power bill for deep freezer, lights and counter billing system',
+      amount: '3850.00',
+      occurredAt: new Date('2026-10-28T14:00:00+05:30'),
+    },
+    {
+      category: 'Store Staff Wages',
+      description: 'Daily helper wage for Guddu Kumar (stock loading and neighborhood doorstep deliveries)',
+      amount: '450.00',
+      occurredAt: new Date('2026-10-31T20:00:00+05:30'),
+    },
+    {
+      category: 'Freight & Transportation',
+      description: 'Loading tempo freight from APMC Wholesale Grain Mandi to shop',
+      amount: '650.00',
+      occurredAt: new Date('2026-10-30T16:30:00+05:30'),
+    },
+    {
+      category: 'Licenses & Maintenance',
+      description: 'Annual Municipal Shop & Establishment trade license registration renewal',
+      amount: '1200.00',
+      occurredAt: new Date('2026-10-25T11:00:00+05:30'),
+    },
+  ];
+
+  for (const exp of expensesData) {
+    await prisma.expense.create({
+      data: {
+        storeId: store.id,
+        category: exp.category,
+        description: exp.description,
+        amount: exp.amount,
+        currency: 'INR',
+        occurredAt: exp.occurredAt,
+        createdById: 'demo-owner',
+      },
+    });
+  }
+  console.log(`✓ ${expensesData.length} Real operational expenses seeded`);
+
+  // 7. Audit Log trail
+  await prisma.auditLog.create({
+    data: {
+      storeId: store.id,
+      actorId: 'demo-owner',
+      action: 'store.master_catalog_onboarded',
+      entityType: 'catalog',
+      metadata: {
+        totalProducts: productsData.length,
+        categories: categoriesData.length,
+        initialStockValuationINR: '48,250.00',
+      },
+    },
+  });
+  console.log('✓ Store onboarding audit log entry created');
+
+  console.log('--- Database seeding completed successfully! ---');
 }
 
 main()
-  .catch((error) => {
-    console.error('Unable to seed the demo store.', error);
+  .catch((e) => {
+    console.error('Seeding error:', e);
     process.exitCode = 1;
   })
   .finally(() => prisma.$disconnect());
