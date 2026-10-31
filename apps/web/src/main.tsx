@@ -3,12 +3,14 @@ import ReactDOM from 'react-dom/client';
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
 import { LayoutDashboard, ShoppingCart, Package, Boxes, ReceiptText, Truck, Wallet, Bot, BarChart3 } from 'lucide-react';
 import './styles.css';
+import { DashboardPage } from './features/dashboard/DashboardPage.js';
 import { ProductsPage } from './features/products/ProductsPage.js';
 import { InventoryPage } from './features/inventory/InventoryPage.js';
 import { SuppliersPage } from './features/suppliers/SuppliersPage.js';
 import { POSPage } from './features/pos/POSPage.js';
 import { SalesPage } from './features/sales/SalesPage.js';
 import { AnalyticsPage } from './features/analytics/AnalyticsPage.js';
+import { AIPage } from './features/ai/AIPage.js';
 
 const nav = [
   { label: 'Overview', path: '/dashboard', icon: LayoutDashboard },
@@ -72,151 +74,7 @@ function Shell({ children }: { children: React.ReactNode }) {
 }
 
 function Dashboard() {
-  const [summary, setSummary] = useState<DashboardSummary | null>(null);
-  const [summaryError, setSummaryError] = useState('');
-  const [activity, setActivity] = useState<ActivityItem[] | null>(null);
-  const [activityError, setActivityError] = useState('');
-  const [salesTrend, setSalesTrend] = useState<Array<{ date: string; revenue: string; transactions: number }> | null>(null);
-
-  useEffect(() => {
-    apiRequest<DashboardSummary>('/dashboard/summary?period=today')
-      .then(setSummary)
-      .catch((cause) => setSummaryError(cause instanceof Error ? cause.message : 'Dashboard data is unavailable.'));
-    apiRequest<ActivityItem[]>('/dashboard/activity?limit=5')
-      .then(setActivity)
-      .catch((cause) => setActivityError(cause instanceof Error ? cause.message : 'Activity is unavailable.'));
-    apiRequest<{ points: Array<{ date: string; revenue: string; transactions: number }> }>('/analytics/sales?days=7')
-      .then((res) => setSalesTrend(res.points))
-      .catch(() => {});
-  }, []);
-
-  const today = new Intl.DateTimeFormat('en-IN', {
-    weekday: 'long',
-    month: 'long',
-    day: 'numeric',
-    year: 'numeric',
-    timeZone: 'Asia/Kolkata',
-  }).format(new Date()).toUpperCase();
-
-  const hour = Number(new Intl.DateTimeFormat('en-IN', { hour: 'numeric', hourCycle: 'h23', timeZone: 'Asia/Kolkata' }).format(new Date()));
-  const greeting = hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening';
-
-  return (
-    <>
-      <div className="page-heading">
-        <div>
-          <p className="eyebrow">{today}</p>
-          <h1>{greeting}, store owner <span>☀</span></h1>
-          <p className="subhead">Here’s how your store is doing today.</p>
-        </div>
-        <span className="period">Today</span>
-      </div>
-      <div className="notice">
-        <span className="notice-icon">i</span>
-        <span><b>Demo workspace</b> · Connected store modules display live business records. POS, Sales, Procurement, and Analytics are fully active.</span>
-      </div>
-      {summaryError && <div className="error-banner" role="status">Dashboard data is unavailable: {summaryError}</div>}
-      <section className="kpi-grid" aria-label="Today's key figures">
-        <Metric label="Today's sales" value={formatRupees(summary?.sales ?? null)} caption="From recorded POS bills" icon="₹" />
-        <Metric label="Open purchase orders" value={summary?.openPurchaseOrders?.toString() ?? '—'} caption="Active distributor orders" icon="▤" />
-        <Metric label="Average basket" value={formatRupees(summary?.averageBasket ?? null)} caption={`${summary?.transactions ?? 0} transactions today`} icon="↗" />
-        <Metric label="Gross profit" value={formatRupees(summary?.grossProfit ?? null)} caption="Sales minus cost basis" icon="◒" />
-      </section>
-      <div className="section-heading">
-        <div>
-          <h2>Store operations</h2>
-          <p>Keep an eye on the things that need attention.</p>
-        </div>
-      </div>
-      <section className="ops-grid">
-        <article className="panel ops-card">
-          <div className="panel-icon amber"><Boxes size={19} /></div>
-          <div>
-            <h3>Inventory & Low Stock</h3>
-            <p>{summary?.lowStockCount ?? 0} item(s) below reorder threshold needing replenishment.</p>
-          </div>
-          <a href="/inventory" className="text-link">Open inventory <span>→</span></a>
-        </article>
-        <article className="panel ops-card">
-          <div className="panel-icon blue"><Truck size={19} /></div>
-          <div>
-            <h3>Purchasing & Suppliers</h3>
-            <p>{summary?.openPurchaseOrders ?? 1} active order(s) placed with wholesale distributors.</p>
-          </div>
-          <a href="/purchases" className="text-link">View purchases <span>→</span></a>
-        </article>
-      </section>
-      <div className="lower-grid">
-        <section className="panel chart-panel">
-          <div className="panel-header">
-            <div>
-              <h2>Sales overview</h2>
-              <p>Daily sales over the last 7 days</p>
-            </div>
-            <a href="/analytics" className="text-link">Analytics <span>→</span></a>
-          </div>
-          {salesTrend && salesTrend.some(p => Number(p.revenue) > 0) ? (
-            <div style={{ display: 'flex', alignItems: 'flex-end', gap: '8px', height: '170px', paddingTop: '15px' }}>
-              {salesTrend.map((pt) => {
-                const maxVal = Math.max(...salesTrend.map((p) => Number(p.revenue)), 1);
-                const h = (Number(pt.revenue) / maxVal) * 100;
-                const d = new Date(pt.date);
-                const dayName = new Intl.DateTimeFormat('en-IN', { weekday: 'short', timeZone: 'Asia/Kolkata' }).format(d);
-                return (
-                  <div key={pt.date} style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', height: '100%', justifyContent: 'flex-end' }}>
-                    <div style={{ fontSize: '9px', color: 'var(--muted)', fontWeight: 600, marginBottom: '4px' }}>
-                      {Number(pt.revenue) > 0 ? `₹${Math.round(Number(pt.revenue))}` : '0'}
-                    </div>
-                    <div style={{ width: '100%', maxWidth: '32px', height: `${Math.max(6, h)}%`, background: Number(pt.revenue) > 0 ? 'var(--green)' : '#e2e8f0', borderRadius: '4px 4px 0 0' }} />
-                    <span style={{ fontSize: '10px', marginTop: '6px', color: '#475569', fontWeight: 600 }}>{dayName}</span>
-                  </div>
-                );
-              })}
-            </div>
-          ) : (
-            <div className="empty-chart">
-              <div className="chart-placeholder"><BarChart3 size={28} /></div>
-              <b>Not enough data yet</b>
-              <span>Sales trends will show here when completed transactions are available.</span>
-            </div>
-          )}
-        </section>
-        <section className="panel activity-panel">
-          <div className="panel-header">
-            <div>
-              <h2>Recent activity</h2>
-              <p>Updates from across your store</p>
-            </div>
-          </div>
-          {activityError ? (
-            <div className="empty-activity">
-              <span className="activity-icon"><ReceiptText size={18} /></span>
-              <div><b>Activity unavailable</b><p>{activityError}</p></div>
-            </div>
-          ) : activity?.length ? (
-            <div className="activity-list">
-              {activity.map(item => (
-                <div className="activity-row" key={item.id}>
-                  <span className="activity-icon"><ReceiptText size={16} /></span>
-                  <div>
-                    <b>{item.action === 'expense.recorded' ? 'Expense recorded' : item.action.replaceAll('.', ' ')}</b>
-                    <p>{item.details?.category || item.entityType}</p>
-                  </div>
-                  <time>{new Intl.DateTimeFormat('en-IN', { hour: 'numeric', minute: '2-digit', timeZone: 'Asia/Kolkata' }).format(new Date(item.occurredAt))}</time>
-                </div>
-              ))}
-            </div>
-          ) : (
-            <div className="empty-activity">
-              <span className="activity-icon"><ReceiptText size={18} /></span>
-              <div><b>Nothing to show yet</b><p>New sales, stock updates, and purchase activity will show here.</p></div>
-            </div>
-          )}
-        </section>
-      </div>
-      <footer>Data status: Connected <span>·</span> Last updated {summary?.updatedAt ?? '—'}</footer>
-    </>
-  );
+  return <DashboardPage />;
 }
 
 function Metric({ label, value, caption, icon }: { label: string; value: string; caption: string; icon: string }) {
@@ -381,7 +239,7 @@ function App() {
     <Shell>
       <Routes>
         <Route path="/" element={<Navigate to="/dashboard" replace />} />
-        <Route path="/dashboard" element={<Dashboard />} />
+        <Route path="/dashboard" element={<DashboardPage />} />
         <Route path="/pos" element={<POSPage />} />
         <Route path="/products" element={<ProductsPage />} />
         <Route path="/inventory" element={<InventoryPage />} />
@@ -390,9 +248,10 @@ function App() {
         <Route path="/purchases" element={<SuppliersPage initialTab="orders" />} />
         <Route path="/finance" element={<FinancePage />} />
         <Route path="/analytics" element={<AnalyticsPage />} />
+        <Route path="/ai" element={<AIPage />} />
         {nav
           .slice(1)
-          .filter((n) => !['/pos', '/products', '/inventory', '/sales', '/suppliers', '/purchases', '/finance', '/analytics'].includes(n.path))
+          .filter((n) => !['/pos', '/products', '/inventory', '/sales', '/suppliers', '/purchases', '/finance', '/analytics', '/ai'].includes(n.path))
           .map(({ label, path }) => (
             <Route key={path} path={path} element={<Placeholder title={label} />} />
           ))}
