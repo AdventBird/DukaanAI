@@ -180,7 +180,8 @@ export class SalesService {
     for (const item of input.items) {
       const product = productMap.get(item.productId)!;
       const qty = new Prisma.Decimal(item.quantity);
-      const unitPrice = item.unitPrice ? new Prisma.Decimal(item.unitPrice) : product.sellingPrice;
+      const priceStr = (item as any).expectedSellingPrice || (item as any).unitPrice;
+      const unitPrice = priceStr ? new Prisma.Decimal(priceStr) : product.sellingPrice;
       const primaryBarcode = product.barcodes.find((b) => b.isPrimary)?.barcode || product.barcodes[0]?.barcode || null;
       const lineTotal = unitPrice.mul(qty);
 
@@ -200,7 +201,11 @@ export class SalesService {
     const discountTotal = new Prisma.Decimal(0);
     const total = subtotal.sub(discountTotal);
 
-    const amountPaid = input.amountPaid ? new Prisma.Decimal(input.amountPaid) : total;
+    const paymentMethod = (input as any).payment?.method || (input as any).paymentMethod || 'CASH';
+    const amountTenderedStr = (input as any).payment?.amountTendered || (input as any).amountPaid;
+    const paymentRef = (input as any).payment?.reference || null;
+
+    const amountPaid = amountTenderedStr ? new Prisma.Decimal(amountTenderedStr) : (paymentMethod === 'CREDIT' ? new Prisma.Decimal(0) : total);
     const changeDue = amountPaid.gt(total) ? amountPaid.sub(total) : new Prisma.Decimal(0);
     const balanceDue = total.gt(amountPaid) ? total.sub(amountPaid) : new Prisma.Decimal(0);
 
@@ -230,7 +235,7 @@ export class SalesService {
           discountTotal,
           total,
           paymentStatus: paymentStatus as any,
-          paymentMethod: input.paymentMethod as any,
+          paymentMethod: paymentMethod as any,
           amountPaid,
           changeDue,
           balanceDue,
@@ -243,10 +248,10 @@ export class SalesService {
           payments: {
             create: {
               storeId,
-              method: input.paymentMethod as any,
+              method: paymentMethod as any,
               amount: amountPaid,
               status: paymentStatus as any,
-              reference: input.paymentMethod === 'UPI' ? `UPI-${dateStr}-${seq}` : null,
+              reference: paymentRef || (paymentMethod === 'UPI' ? `UPI-${dateStr}-${seq}` : null),
               recordedBy: actorId,
             },
           },

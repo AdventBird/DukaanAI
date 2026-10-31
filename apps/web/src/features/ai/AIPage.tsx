@@ -122,7 +122,7 @@ export function AIPage() {
       ]);
 
       // Check if any voice transcript evidence was returned
-      const voiceEv = data.evidence.find((e) => e.type === 'VOICE_TRANSCRIPT');
+      const voiceEv = data.evidence?.find((e: any) => e.type === 'VOICE_TRANSCRIPT');
       if (voiceEv && voiceEv.data) {
         setVoiceCall(voiceEv.data as VoiceCallResult);
       }
@@ -477,7 +477,7 @@ export function AIPage() {
 
                   {/* Step Timeline */}
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', margin: '8px 0' }}>
-                    {task.steps.map((step, sIdx) => (
+                    {task.steps?.map((step: any, sIdx: number) => (
                       <div key={sIdx} style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '10.5px' }}>
                         {step.status === 'COMPLETED' ? (
                           <CheckCircle2 size={13} color="#16a34a" />
@@ -623,7 +623,7 @@ export function AIPage() {
             </div>
 
             <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '10px', marginBottom: '14px' }}>
-              {voiceCall.transcript.map((line, lIdx) => (
+              {voiceCall.transcript?.map((line: any, lIdx: number) => (
                 <div
                   key={lIdx}
                   style={{

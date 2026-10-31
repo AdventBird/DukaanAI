@@ -191,7 +191,7 @@ export function BarcodeScanner({ onScan, isScanning, onToggleScanning }: Barcode
         }
 
         const reader = readerRef.current;
-        const controls = await reader.decodeFromVideoElement(videoRef.current!, (result, err) => {
+        const controls = await reader.decodeFromVideoElement(videoRef.current!, (result: any, _err: any) => {
           if (result) {
             handleDecodedBarcode(result.getText());
           }

@@ -211,10 +211,10 @@ export function createAIRouter(prisma: PrismaClient): Router {
   router.get('/activity', (req: Request, res: Response) => {
     if (!req.auth) return res.status(401).json(errorEnvelope('UNAUTHENTICATED', 'Auth required', res.locals.requestId));
     const tasks = taskService.listTasks(req.auth.storeId);
-    const activities = tasks.flatMap((t) =>
-      t.steps
-        .filter((s) => s.status === 'COMPLETED')
-        .map((s) => ({
+    const activities = tasks.flatMap((t: any) =>
+      (t.steps || [])
+        .filter((s: any) => s.status === 'COMPLETED')
+        .map((s: any) => ({
           taskId: t.id,
           taskType: t.taskType,
           stepName: s.name,

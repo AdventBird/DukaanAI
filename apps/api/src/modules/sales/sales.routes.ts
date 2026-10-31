@@ -1,6 +1,7 @@
 import { Router, type Request, type Response, type NextFunction } from 'express';
 import { PrismaClient } from '@prisma/client';
-import { createSaleInputSchema, errorEnvelope, successEnvelope } from '@dukaanai/shared';
+import { randomUUID } from 'node:crypto';
+import { createSaleSchema, errorEnvelope, successEnvelope } from '@dukaanai/shared';
 import { SalesService } from './sales.service.js';
 
 export function createSalesRouter(prisma: PrismaClient, salesService: SalesService) {
@@ -46,7 +47,25 @@ export function createSalesRouter(prisma: PrismaClient, salesService: SalesServi
     const storeId = req.auth.storeId;
     const actorId = req.auth.userId;
 
-    const parsed = createSaleInputSchema.safeParse(req.body);
+    const raw = req.body || {};
+    const normalized = {
+      idempotencyKey: raw.idempotencyKey || `sale-${randomUUID()}`,
+      items: Array.isArray(raw.items)
+        ? raw.items.map((i: any) => ({
+            productId: i.productId,
+            quantity: String(i.quantity ?? ''),
+            expectedSellingPrice: String(i.expectedSellingPrice ?? i.unitPrice ?? '0.00'),
+          }))
+        : [],
+      payment: raw.payment || {
+        method: raw.paymentMethod || 'CASH',
+        amountTendered: raw.amountPaid ? String(raw.amountPaid) : undefined,
+        reference: raw.paymentRef || undefined,
+      },
+      customerLabel: raw.customerLabel || undefined,
+    };
+
+    const parsed = createSaleSchema.safeParse(normalized);
     if (!parsed.success) {
       return res.status(400).json(
         errorEnvelope(

@@ -2,6 +2,8 @@ import { z } from 'zod';
 
 export * from './suppliers/index.js';
 export * from './procurement/index.js';
+export * from './sales/index.js';
+export * from './ai/index.js';
 
 export const authContextSchema = z.object({
   userId: z.string().min(1),
@@ -146,58 +148,8 @@ export interface LowStockResult {
 }
 
 // ==========================================
-// Sales, POS & Analytics Schemas & Types (Dev 2)
+// Sales & Analytics Extensions
 // ==========================================
-
-export const paymentMethods = ['CASH', 'UPI', 'CREDIT'] as const;
-export type PaymentMethod = (typeof paymentMethods)[number];
-
-export const saleStatuses = ['COMPLETED', 'CANCELLED'] as const;
-export type SaleStatus = (typeof saleStatuses)[number];
-
-export const createSaleItemInputSchema = z.object({
-  productId: z.string().min(1, 'Product ID is required'),
-  quantity: z.string().regex(/^\d{1,8}(\.\d{1,3})?$/, 'Quantity must be a valid positive decimal').refine((v) => Number(v) > 0, 'Quantity must be greater than zero'),
-  unitPrice: z.string().regex(/^\d{1,10}(\.\d{1,2})?$/).optional(),
-  discount: z.string().regex(/^\d{1,10}(\.\d{1,2})?$/).optional(),
-});
-export type CreateSaleItemInput = z.infer<typeof createSaleItemInputSchema>;
-
-export const createSaleInputSchema = z.object({
-  customerLabel: z.string().trim().max(100).optional(),
-  items: z.array(createSaleItemInputSchema).min(1, 'At least one item is required in the sale'),
-  paymentMethod: z.enum(paymentMethods).default('CASH'),
-  amountPaid: z.string().regex(/^\d{1,10}(\.\d{1,2})?$/).optional(),
-  notes: z.string().trim().max(300).optional(),
-  idempotencyKey: z.string().trim().min(1).max(128).optional(),
-});
-export type CreateSaleInput = z.infer<typeof createSaleInputSchema>;
-
-export interface SaleSummaryItem {
-  id: string;
-  receiptNumber: string;
-  status: SaleStatus;
-  subtotal: string;
-  discountTotal: string;
-  total: string;
-  paymentMethod: PaymentMethod;
-  paymentStatus: string;
-  amountPaid: string;
-  changeDue: string;
-  balanceDue: string;
-  customerLabel: string | null;
-  itemCount: number;
-  items?: Array<{
-    id: string;
-    productId: string;
-    productName: string;
-    stockUnit: string;
-    quantity: string;
-    unitPrice: string;
-    lineTotal: string;
-  }>;
-  createdAt: string;
-}
 
 export interface SalesAnalyticsPoint {
   date: string;

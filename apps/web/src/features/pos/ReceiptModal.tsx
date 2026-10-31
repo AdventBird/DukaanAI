@@ -105,7 +105,7 @@ export function ReceiptModal({ sale, onClose }: ReceiptModalProps) {
 
           {/* Items */}
           <div className="receipt-items">
-            {sale.items.map((item) => (
+            {sale.items.map((item: any) => (
               <div key={item.id} className="receipt-item-block">
                 <div className="receipt-item-name">
                   <strong>{item.productNameSnapshot}</strong>
