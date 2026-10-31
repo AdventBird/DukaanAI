@@ -8,6 +8,7 @@ import { InventoryPage } from './features/inventory/InventoryPage.js';
 import { SuppliersPage } from './features/suppliers/SuppliersPage.js';
 import { POSPage } from './features/pos/POSPage.js';
 import { SalesHistoryPage } from './features/pos/SalesHistoryPage.js';
+import { AIPage } from './features/ai/AIPage.js';
 
 const nav = [
   { label: 'Overview', path: '/dashboard', icon: LayoutDashboard },
@@ -354,9 +355,10 @@ function App() {
         <Route path="/suppliers" element={<SuppliersPage initialTab="suppliers" />} />
         <Route path="/purchases" element={<SuppliersPage initialTab="orders" />} />
         <Route path="/finance" element={<FinancePage />} />
+        <Route path="/ai" element={<AIPage />} />
         {nav
           .slice(1)
-          .filter((n) => !['/products', '/inventory', '/pos', '/sales', '/suppliers', '/purchases', '/finance'].includes(n.path))
+          .filter((n) => !['/products', '/inventory', '/pos', '/sales', '/suppliers', '/purchases', '/finance', '/ai'].includes(n.path))
           .map(({ label, path }) => (
             <Route key={path} path={path} element={<Placeholder title={label} />} />
           ))}
