@@ -16,9 +16,8 @@
     "db:seed": "prisma db seed --schema database/prisma/schema.prisma",
     "db:studio": "prisma studio --schema database/prisma/schema.prisma"
   },
-  "prisma": { "seed": "tsx database/prisma/seed.ts" },
   "postinstall": "npm run db:generate",
-  "dependencies": { "@prisma/client": "^6.16.2" },
+  "dependencies": { "@prisma/client": "^6.16.2", "dotenv": "^16.6.1" },
   "devDependencies": {
     "concurrently": "^9.2.1",
     "prisma": "^6.16.2",
