@@ -19,3 +19,5 @@ jobs:
       - run: npm test
       - run: npm run build
       - run: npx prisma validate --schema database/prisma/schema.prisma
+        env:
+          DATABASE_URL: postgresql://dukaanai:dukaanai@localhost:5432/dukaanai?schema=public
