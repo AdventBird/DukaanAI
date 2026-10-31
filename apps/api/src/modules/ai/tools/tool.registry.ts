@@ -456,6 +456,27 @@ export class ToolRegistry {
         };
       },
     });
+
+    // 15. get_inventory_overview
+    this.register({
+      name: 'get_inventory_overview',
+      description: 'Get an overall inventory stock health and breakdown of on-hand products in the store.',
+      permission: 'READ',
+      parameters: {
+        type: 'object',
+        properties: {},
+      },
+      execute: async (ctx) => {
+        const inv = new InventoryService(ctx.prisma);
+        const health = await inv.getInventoryHealth(ctx.storeId);
+        const balances = await inv.listBalances(ctx.storeId, { pageSize: 10 });
+        const sampleList = balances.items.map((b: any) => `${b.name || b.productName}: ${b.quantityOnHand} ${b.stockUnit}`).join(', ');
+        return {
+          summary: `Total Products: ${health.totalProducts}, Low Stock: ${health.lowStockCount}, Out of Stock: ${health.stockoutCount}. Sample stock on hand: ${sampleList}.`,
+          data: { health, sampleStock: balances.items },
+        };
+      },
+    });
   }
 
   register(def: ToolDefinition) {

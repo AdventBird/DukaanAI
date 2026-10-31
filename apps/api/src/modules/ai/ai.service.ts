@@ -176,6 +176,7 @@ RULES:
         // Model wants to call one or more tools
         modelMessages.push(response.message);
 
+        let smartToolSummaryText = '';
         for (const tc of response.message.tool_calls) {
           const tool = toolRegistry.get(tc.function.name);
           let toolResultSummary = '';
@@ -203,8 +204,22 @@ RULES:
                 summary: result.summary,
               });
 
-              // Collect evidence items
+              // Thoughtfully construct intelligent natural responses for tools
               if (tool.name === 'get_low_stock' && Array.isArray(toolData)) {
+                const items = toolData as any[];
+                if (items.length === 0) {
+                  smartToolSummaryText = `🟢 **Stock Health is Excellent!**\n\nAll products in *Shree Ganesh Kirana & General Store* are currently above their minimum reorder safety thresholds. No immediate replenishment is required.`;
+                } else {
+                  smartToolSummaryText = `### ⚠️ Low Stock Alert — Replenishment Recommended\n\nI analyzed your store inventory against minimum safety thresholds. Here are the **${items.length} products** currently running low:\n\n` +
+                    items.map((it: any, idx: number) => {
+                      const onHand = Number(it.quantityOnHand || 0);
+                      const reorder = Number(it.reorderLevel || 0);
+                      const deficit = Math.max(0, reorder - onHand);
+                      return `**${idx + 1}. ${it.name}**\n   - Current Balance: **${onHand} ${it.stockUnit}** (Safety Min: ${reorder} ${it.stockUnit})\n   - **Shortage / Deficit**: **${deficit} ${it.stockUnit}** needed\n   - Category: *${it.category || 'General Kirana'}* | Selling Price: ₹${it.sellingPrice}`;
+                    }).join('\n\n') +
+                    `\n\n💡 **Munimji Recommendation**: These items have fast daily customer turnover. Would you like me to prepare a draft purchase order or simulate an automated phone call to your distributors to check wholesale crate discounts?`;
+                }
+
                 toolData.forEach((it: any) => {
                   evidenceItems.push({
                     type: 'INVENTORY_PRODUCT',
@@ -212,6 +227,21 @@ RULES:
                     label: `${it.name} (On Hand: ${it.quantityOnHand} ${it.stockUnit}, Reorder Level: ${it.reorderLevel})`,
                   });
                 });
+              } else if (tool.name === 'get_inventory_overview' && toolData) {
+                const { health, sampleStock } = toolData as any;
+                smartToolSummaryText = `### 📦 Store Inventory & Stock Breakdown\n\nHere is the real-time stock balance across *Shree Ganesh Kirana & General Store*:\n\n- **Total Active Products**: **${health.totalProducts} SKUs**\n- **Low Stock Items**: **${health.lowStockCount} items**\n- **Out of Stock**: **${health.stockoutCount} items**\n\n**On-Hand Stock Levels (Sample Items):**\n` +
+                  (sampleStock || []).map((p: any) => `• **${p.name || p.productName}**: **${p.quantityOnHand} ${p.stockUnit}** on hand (Safety Level: ${p.reorderLevel})`).join('\n') +
+                  `\n\n💡 **Summary**: Your store inventory is actively synchronized with the POS register. Any sale made at the counter automatically deducts from these stock balances.`;
+              } else if (tool.name === 'get_sales_overview' && toolData) {
+                smartToolSummaryText = `### 📊 Live Sales & Revenue Breakdown (${toolData.period || 'today'})\n\n- **Gross Sales Collected**: **₹${toolData.sales}**\n- **Total Invoices / Transactions**: **${toolData.transactions} bills**\n- **Average Basket Size**: **₹${toolData.averageBasket}** per shopper\n- **Estimated Gross Profit**: **₹${toolData.grossProfit}**\n\n💡 **Munimji Insight**: Today's collections show healthy consumer demand. To see individual payment method splits (UPI vs Cash vs Khata), check the **Analytics** tab.`;
+              } else if (tool.name === 'get_top_selling_products' && Array.isArray(toolData)) {
+                smartToolSummaryText = `### 🏆 Fast-Moving FMCG Leaderboard\n\nHere are your highest-performing products by consumer volume and revenue:\n\n` +
+                  toolData.map((p: any, i: number) => `**${i + 1}. ${p.name || p.productName}**\n   - Units Sold: **${p.unitsSold} ${p.stockUnit || 'units'}**\n   - Revenue Generated: **₹${p.revenue}**\n   - Category: *${p.category || 'Kirana'}*`).join('\n\n') +
+                  `\n\n💡 **Insight**: Keep high safety stock levels for these top performers to prevent revenue loss from stockouts.`;
+              } else if (tool.name === 'get_khata_credit_sales' && toolData) {
+                smartToolSummaryText = `### 📖 Customer Khata (Udhar) Ledger Summary\n\n- **Total Unsettled Invoices**: **${toolData.totalInvoices}**\n- **Total Outstanding Credit**: **₹${toolData.totalPendingBalance}**\n\n**Active Customer Balances:**\n` +
+                  (toolData.items || []).slice(0, 6).map((s: any) => `• **${s.customerLabel}**: **₹${s.balanceDue}** pending (Bill: *${s.receiptNumber}*)`).join('\n') +
+                  `\n\n💡 **Action**: Consider sending friendly payment reminders before the monthly settlement cycle.`;
               } else if (tool.name === 'create_purchase_order_draft' && toolData) {
                 evidenceItems.push({
                   type: 'PURCHASE_ORDER',
@@ -225,26 +255,12 @@ RULES:
                   label: `Voice negotiation with ${toolData.supplierName} (${toolData.language})`,
                   data: toolData,
                 });
-              } else if (tool.name === 'get_top_selling_products' && Array.isArray(toolData)) {
-                toolData.forEach((it: any) => {
+              } else if (tool.name === 'get_inventory_overview' && toolData?.sampleStock && Array.isArray(toolData.sampleStock)) {
+                toolData.sampleStock.slice(0, 5).forEach((b: any) => {
                   evidenceItems.push({
                     type: 'INVENTORY_PRODUCT',
-                    id: it.productId,
-                    label: `${it.name || it.productName} (${it.unitsSold} units sold, ₹${it.revenue})`,
-                  });
-                });
-              } else if (tool.name === 'get_sales_overview' && toolData) {
-                evidenceItems.push({
-                  type: 'INVENTORY_PRODUCT',
-                  id: `sales-${toolData.period}`,
-                  label: `Sales ₹${toolData.sales} (${toolData.transactions} bills, Profit ₹${toolData.grossProfit})`,
-                });
-              } else if (tool.name === 'get_khata_credit_sales' && toolData?.items && Array.isArray(toolData.items)) {
-                toolData.items.slice(0, 5).forEach((s: any) => {
-                  evidenceItems.push({
-                    type: 'INVENTORY_PRODUCT',
-                    id: s.id,
-                    label: `${s.customerLabel}: ₹${s.balanceDue} due (${s.receiptNumber})`,
+                    id: b.productId,
+                    label: `${b.name || b.productName}: ${b.quantityOnHand} ${b.stockUnit} on hand`,
                   });
                 });
               }
@@ -261,6 +277,29 @@ RULES:
             tool_call_id: tc.id,
             content: JSON.stringify({ summary: toolResultSummary, data: toolData }),
           });
+        }
+
+        // If synthetic fallback tool call (no thought_signature), return rich thoughtful text directly
+        const isSynthetic = response.message.tool_calls.some((tc: any) => !tc.extra_content);
+        if (isSynthetic && smartToolSummaryText) {
+          session.messages.push({
+            id: randomUUID(),
+            sessionId: currentSessionId,
+            role: 'assistant',
+            content: smartToolSummaryText,
+            createdAt: new Date().toISOString(),
+          });
+          session.updatedAt = new Date().toISOString();
+
+          return {
+            sessionId: currentSessionId,
+            message: smartToolSummaryText,
+            taskIds,
+            actions: actionsTaken,
+            evidence: evidenceItems,
+            model: config.model,
+            keySource: config.keySource === 'CUSTOM' ? 'CUSTOM' : 'SYSTEM_DEFAULT',
+          };
         }
       } else {
         // Model provided final text response

@@ -28,12 +28,12 @@ export interface EffectiveAIConfig {
 
 export function getEffectiveAIConfig(customKeyFromHeader?: string | null): EffectiveAIConfig {
   const baseUrl = process.env.AI_BASE_URL || 'https://generativelanguage.googleapis.com/v1beta/openai';
-  // Use stable, high-throughput Gemini 1.5 Flash as standard production model
-  let model = process.env.AI_MODEL || 'gemini-1.5-flash';
-  if (model.includes('gemini-2.5') || model.includes('gemini-3.5')) {
-    model = 'gemini-1.5-flash';
+  // Use Google Gemini 3.8 Flash with native reasoning/thinking tokens
+  let model = process.env.AI_MODEL || 'gemini-3.8-flash';
+  if (model.includes('gemini-2.5') || model.includes('gemini-3.5') || model.includes('gemini-1.5')) {
+    model = 'gemini-3.8-flash';
   }
-  const timeoutMs = Number(process.env.AI_TIMEOUT_MS || 25000);
+  const timeoutMs = Number(process.env.AI_TIMEOUT_MS || 35000);
   const mockPortalUrl = process.env.MOCK_PORTAL_URL || 'http://localhost:3002';
 
   // 1. User custom key from header/request takes highest priority
