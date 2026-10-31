@@ -4,7 +4,7 @@ DukaanAI is an AI-assisted operating system for Indian kirana stores. This repos
 
 ## Local setup
 
-Requirements: Node.js 22 or newer, npm, and Docker Compose.
+Requirements: Node.js 22.12 or newer, npm, and Docker Compose.
 
 ```sh
 cp .env.example .env
@@ -47,4 +47,4 @@ The web manifest enables install metadata. Service worker caching is intentional
 
 ## Current integration status
 
-The global shell includes route placeholders for POS, products, inventory, sales, suppliers, finance, analytics, and AI Employee. API aggregation routes are pending the corresponding domain contracts. The AI worker, distributor mock portal, real authentication, outbox dispatcher, and expense CRUD are not implemented by this foundation commit.
+The global shell includes route placeholders for POS, products, inventory, sales, suppliers, analytics, and AI Employee. Dashboard sales/inventory/procurement aggregates are pending the corresponding domain contracts. Finance includes store-scoped expense listing/entry and an expense total; sales revenue, COGS, and gross profit remain unavailable. The AI worker, distributor mock portal, real authentication, and outbox dispatcher are not implemented by this foundation commit.

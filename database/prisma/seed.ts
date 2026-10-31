@@ -2,7 +2,7 @@ import 'dotenv/config';
 import { PrismaClient } from '@prisma/client';
 
 const prisma = new PrismaClient();
-try {
+async function main() {
   const store = await prisma.store.upsert({
     where: { id: 'demo-store' },
     update: {},
@@ -11,9 +11,8 @@ try {
   await prisma.user.upsert({
     where: { storeId_loginId: { storeId: store.id, loginId: 'demo-owner' } },
     update: {},
-    create: { storeId: store.id, displayName: 'Demo Owner', loginId: 'demo-owner', role: 'OWNER' },
+    create: { id: 'demo-owner', storeId: store.id, displayName: 'Demo Owner', loginId: 'demo-owner', role: 'OWNER' },
   });
   console.log('Demo store and owner are ready.');
-} finally {
-  await prisma.$disconnect();
 }
+main().catch((error) => { console.error('Unable to seed the demo store.', error); process.exitCode = 1; }).finally(() => prisma.$disconnect());

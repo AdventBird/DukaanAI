@@ -30,3 +30,12 @@ export const domainEventSchema = z.object({
   payload: z.unknown(),
 });
 export type DomainEvent = z.infer<typeof domainEventSchema>;
+
+export const createExpenseSchema = z.object({
+  category: z.string().trim().min(1).max(80),
+  description: z.string().trim().max(500).optional(),
+  amount: z.string().regex(/^\d{1,10}(\.\d{1,2})?$/).refine((value) => Number(value) > 0, 'Amount must be greater than zero.'),
+  currency: z.literal('INR').default('INR'),
+  occurredAt: z.string().datetime(),
+});
+export type CreateExpenseInput = z.infer<typeof createExpenseSchema>;

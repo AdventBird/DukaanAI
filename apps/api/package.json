@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@dukaanai/shared": "*",
+    "@prisma/client": "^6.16.2",
     "cors": "^2.8.5",
     "dotenv": "^16.6.1",
     "express": "^5.1.0",
