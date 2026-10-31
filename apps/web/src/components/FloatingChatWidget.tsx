@@ -84,6 +84,7 @@ export function FloatingChatWidget() {
         body: JSON.stringify({
           message: textToSend,
           sessionId: sessionId || undefined,
+          customApiKey: activeKey.trim() || undefined,
         }),
       });
 

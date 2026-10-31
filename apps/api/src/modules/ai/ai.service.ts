@@ -146,10 +146,13 @@ RULES:
 - Store owner approval is required before purchase orders are submitted to distributor portals.
 - Always quote prices in INR (₹). Be concise, respectful, and helpful. Respond in English, Hindi, or Hinglish as preferred by the user.`,
       },
-      ...session.messages.slice(-8).map((m) => ({
-        role: m.role,
-        content: m.content,
-      })),
+      ...session.messages
+        .filter((m) => m && m.role && typeof m.content === 'string' && m.content.trim().length > 0)
+        .slice(-8)
+        .map((m) => ({
+          role: m.role,
+          content: m.content,
+        })),
     ];
 
     const actionsTaken: AgentToolAction[] = [];
@@ -242,6 +245,19 @@ RULES:
                 smartToolSummaryText = `### 📖 Customer Khata (Udhar) Ledger Summary\n\n- **Total Unsettled Invoices**: **${toolData.totalInvoices}**\n- **Total Outstanding Credit**: **₹${toolData.totalPendingBalance}**\n\n**Active Customer Balances:**\n` +
                   (toolData.items || []).slice(0, 6).map((s: any) => `• **${s.customerLabel}**: **₹${s.balanceDue}** pending (Bill: *${s.receiptNumber}*)`).join('\n') +
                   `\n\n💡 **Action**: Consider sending friendly payment reminders before the monthly settlement cycle.`;
+              } else if (tool.name === 'list_suppliers' && toolData) {
+                const list = (toolData.items || (Array.isArray(toolData) ? toolData : [])) as any[];
+                smartToolSummaryText = `### 🚚 Active Wholesale Suppliers & Distributors\n\nHere are the active wholesale distributors registered for *Shree Ganesh Kirana & General Store*:\n\n` +
+                  list.map((s: any, idx: number) => `**${idx + 1}. ${s.name}**\n   - Contact Person: **${s.contactPerson || 'Sales Desk'}** | Phone: **${s.phone || 'N/A'}**\n   - Payment Terms: **${s.defaultPaymentTerms || 'CASH'}** | Lead Time: **${s.defaultLeadTimeDays || 1} day(s)**\n   - City: ${s.city || 'Delhi'} | Notes: *${s.notes || 'Authorized wholesale distributor'}*`).join('\n\n') +
+                  `\n\n💡 **Munimji Action**: You can ask me to compare quotation prices or simulate an automated phone call to negotiate bulk rates with any of these suppliers!`;
+
+                list.forEach((s: any) => {
+                  evidenceItems.push({
+                    type: 'SUPPLIER_QUOTE',
+                    id: s.id,
+                    label: `${s.name} (${s.contactPerson || 'Sales'}: ${s.phone || 'Phone'})`,
+                  });
+                });
               } else if (tool.name === 'create_purchase_order_draft' && toolData) {
                 evidenceItems.push({
                   type: 'PURCHASE_ORDER',
@@ -279,21 +295,21 @@ RULES:
           });
         }
 
-        // If synthetic fallback tool call (no thought_signature), return rich thoughtful text directly
-        const isSynthetic = response.message.tool_calls.some((tc: any) => !tc.extra_content);
-        if (isSynthetic && smartToolSummaryText) {
+        // When tools execute and produce structured store intelligence, return immediately to eliminate slow round-trips
+        const replyText = smartToolSummaryText || (actionsTaken.length > 0 ? actionsTaken[0]?.summary : '');
+        if (replyText) {
           session.messages.push({
             id: randomUUID(),
             sessionId: currentSessionId,
             role: 'assistant',
-            content: smartToolSummaryText,
+            content: replyText,
             createdAt: new Date().toISOString(),
           });
           session.updatedAt = new Date().toISOString();
 
           return {
             sessionId: currentSessionId,
-            message: smartToolSummaryText,
+            message: replyText,
             taskIds,
             actions: actionsTaken,
             evidence: evidenceItems,

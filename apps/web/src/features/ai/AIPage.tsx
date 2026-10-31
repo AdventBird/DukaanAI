@@ -107,6 +107,7 @@ export function AIPage() {
         body: JSON.stringify({
           sessionId,
           message: text,
+          customApiKey: localStorage.getItem('dukaanai_custom_api_key') || undefined,
         }),
       });
 

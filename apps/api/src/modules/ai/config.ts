@@ -27,67 +27,57 @@ export interface EffectiveAIConfig {
 }
 
 export function getEffectiveAIConfig(customKeyFromHeader?: string | null): EffectiveAIConfig {
-  const baseUrl = process.env.AI_BASE_URL || 'https://generativelanguage.googleapis.com/v1beta/openai';
-  // Use Google Gemini 3.8 Flash with native reasoning/thinking tokens
-  let model = process.env.AI_MODEL || 'gemini-3.8-flash';
-  if (model.includes('gemini-2.5') || model.includes('gemini-3.5') || model.includes('gemini-1.5')) {
-    model = 'gemini-3.8-flash';
-  }
-  const timeoutMs = Number(process.env.AI_TIMEOUT_MS || 35000);
+  const customKey = customKeyFromHeader?.trim();
+  const apiKey = customKey || process.env.AI_API_KEY?.trim() || getFallbackDefaultKey();
+  const keySource: 'CUSTOM' | 'SYSTEM_DEFAULT' | 'NONE' = customKey
+    ? 'CUSTOM'
+    : (process.env.AI_API_KEY ? 'SYSTEM_DEFAULT' : (apiKey ? 'SYSTEM_DEFAULT' : 'NONE'));
+
+  const timeoutMs = Number(process.env.AI_TIMEOUT_MS || 12000);
   const mockPortalUrl = process.env.MOCK_PORTAL_URL || 'http://localhost:3002';
 
-  // 1. User custom key from header/request takes highest priority
-  if (customKeyFromHeader && customKeyFromHeader.trim().length > 0) {
-    return {
-      baseUrl,
-      model,
-      apiKey: customKeyFromHeader.trim(),
-      keySource: 'CUSTOM',
-      timeoutMs,
-      mockPortalUrl,
-    };
-  }
+  // Smart endpoint & model detection based on key format:
+  let baseUrl = process.env.AI_BASE_URL;
+  let model = process.env.AI_MODEL;
 
-  // 2. Server environment key
-  if (process.env.AI_API_KEY && process.env.AI_API_KEY.trim().length > 0) {
-    return {
-      baseUrl,
-      model,
-      apiKey: process.env.AI_API_KEY.trim(),
-      keySource: 'SYSTEM_DEFAULT',
-      timeoutMs,
-      mockPortalUrl,
-    };
-  }
-
-  // 3. Built-in default key fallback
-  const fallback = getFallbackDefaultKey();
-  if (fallback) {
-    return {
-      baseUrl,
-      model,
-      apiKey: fallback,
-      keySource: 'SYSTEM_DEFAULT',
-      timeoutMs,
-      mockPortalUrl,
-    };
+  if (!baseUrl) {
+    if (apiKey.startsWith('sk-') && !apiKey.startsWith('sk-or-')) {
+      // OpenAI API Key
+      baseUrl = 'https://api.openai.com/v1';
+      model = model || 'gpt-4o-mini';
+    } else {
+      // Google Gemini API Key or Default
+      baseUrl = 'https://generativelanguage.googleapis.com/v1beta/openai';
+      // Official Google Gemini 2.0 Flash is the primary recommended production model
+      model = model || 'gemini-2.0-flash';
+    }
+  } else if (!model) {
+    model = baseUrl.includes('openai.com') ? 'gpt-4o-mini' : 'gemini-2.0-flash';
   }
 
   return {
     baseUrl,
     model,
-    apiKey: '',
-    keySource: 'NONE',
+    apiKey,
+    keySource,
     timeoutMs,
     mockPortalUrl,
   };
 }
 
 export function getAIHealth(config: EffectiveAIConfig): AIHealthStatus {
+  const isCustom = config.keySource === 'CUSTOM';
+  const isOpenAI = config.baseUrl.includes('openai.com');
+  const provider = isOpenAI
+    ? 'OpenAI'
+    : isCustom
+    ? 'Google Gemini (Custom Key Active)'
+    : 'DukaanAI Copilot Engine';
+
   return {
     status: config.apiKey ? 'READY' : 'DEGRADED',
     model: config.model,
-    provider: 'Google Gemini (OpenAI Compatible API)',
+    provider,
     keyConfigured: Boolean(config.apiKey),
     keySource: config.keySource,
     maskedKey: maskApiKey(config.apiKey),

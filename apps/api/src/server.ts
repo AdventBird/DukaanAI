@@ -1,4 +1,11 @@
 import 'dotenv/config';
+import dns from 'node:dns';
+
+// Ensure IPv4 is resolved before IPv6 on Windows to prevent TCP SYN timeouts on external AI endpoints
+try {
+  dns.setDefaultResultOrder('ipv4first');
+} catch {}
+
 import cors from 'cors';
 import express, { type ErrorRequestHandler, type Request, type Response } from 'express';
 import { randomUUID } from 'node:crypto';

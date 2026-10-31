@@ -202,8 +202,9 @@ export class ModelAdapter {
 
     const lastUserMsg = [...messages].reverse().find((m) => m.role === 'user')?.content?.toLowerCase() || '';
 
-    // ── 1. REAL STORE DATA & TOOL MATCHING (Takes priority over generic informational replies) ──
+    // ── 1. REAL STORE DATA & TOOL MATCHING (Takes highest priority for store operations) ──
     if (tools && tools.length > 0) {
+      // 1. Low stock / reorder / shortages (Evaluated first so questions with "explain what needs reordering" check real stock)
       if (
         lastUserMsg.includes('low') ||
         lastUserMsg.includes('reorder') ||
@@ -231,14 +232,40 @@ export class ModelAdapter {
         };
       }
 
+      // 2. Suppliers / Distributors / Vendors
       if (
-        lastUserMsg.includes('what are the stock') ||
-        lastUserMsg.includes('check stock') ||
-        lastUserMsg.includes('inventory stock') ||
-        lastUserMsg.includes('stock balance') ||
-        lastUserMsg.includes('total stock') ||
-        lastUserMsg.includes('how much stock') ||
-        lastUserMsg.includes('stock level')
+        lastUserMsg.includes('supplier') ||
+        lastUserMsg.includes('distributor') ||
+        lastUserMsg.includes('distrbutor') ||
+        lastUserMsg.includes('vendor') ||
+        lastUserMsg.includes('wholesaler')
+      ) {
+        return {
+          message: {
+            role: 'assistant',
+            content: null,
+            tool_calls: [
+              {
+                id: `call_${Date.now()}_2`,
+                type: 'function',
+                function: {
+                  name: 'list_suppliers',
+                  arguments: JSON.stringify({}),
+                },
+              },
+            ],
+          },
+          finishReason: 'tool_calls',
+          durationMs: Date.now() - startTime,
+        };
+      }
+
+      // 3. Stock balances / items / products list
+      if (
+        lastUserMsg.includes('stock') ||
+        lastUserMsg.includes('inventory') ||
+        lastUserMsg.includes('balance') ||
+        (/\b(items?|products?|catalog|catalogue)\b/i.test(lastUserMsg) && !lastUserMsg.includes('how to'))
       ) {
         return {
           message: {
@@ -260,13 +287,13 @@ export class ModelAdapter {
         };
       }
 
+      // 4. Sales / Revenue (Use word boundaries, ignore general "how to" advice questions)
       if (
-        lastUserMsg.includes('sale') ||
-        lastUserMsg.includes('revenue') ||
-        lastUserMsg.includes('sold') ||
-        lastUserMsg.includes('today') ||
-        lastUserMsg.includes('profit') ||
-        lastUserMsg.includes('earning')
+        (/\b(sales?|revenue|turnover|earnings?|collection)\b/i.test(lastUserMsg) ||
+          lastUserMsg.includes('how much did we sell') ||
+          lastUserMsg.includes('today')) &&
+        !lastUserMsg.includes('how to') &&
+        !lastUserMsg.includes('improve')
       ) {
         return {
           message: {
@@ -290,27 +317,7 @@ export class ModelAdapter {
         };
       }
 
-      if (lastUserMsg.includes('top') || lastUserMsg.includes('best') || lastUserMsg.includes('popular') || lastUserMsg.includes('fast')) {
-        return {
-          message: {
-            role: 'assistant',
-            content: null,
-            tool_calls: [
-              {
-                id: `call_${Date.now()}_4`,
-                type: 'function',
-                function: {
-                  name: 'get_top_selling_products',
-                  arguments: JSON.stringify({ limit: 5 }),
-                },
-              },
-            ],
-          },
-          finishReason: 'tool_calls',
-          durationMs: Date.now() - startTime,
-        };
-      }
-
+      // 5. Customer Khata / Udhar
       if (
         lastUserMsg.includes('khata') ||
         lastUserMsg.includes('udhar') ||
@@ -338,18 +345,19 @@ export class ModelAdapter {
         };
       }
 
-      if (lastUserMsg.includes('supplier') || lastUserMsg.includes('distributor')) {
+      // 6. Top selling FMCG leaderboard
+      if (lastUserMsg.includes('top') || lastUserMsg.includes('best') || lastUserMsg.includes('popular') || lastUserMsg.includes('fast')) {
         return {
           message: {
             role: 'assistant',
             content: null,
             tool_calls: [
               {
-                id: `call_${Date.now()}_2`,
+                id: `call_${Date.now()}_4`,
                 type: 'function',
                 function: {
-                  name: 'list_suppliers',
-                  arguments: JSON.stringify({}),
+                  name: 'get_top_selling_products',
+                  arguments: JSON.stringify({ limit: 5 }),
                 },
               },
             ],
@@ -360,7 +368,7 @@ export class ModelAdapter {
       }
     }
 
-    // ── 2. WEBSITE & OPERATIONAL HOW-TO GUIDANCE (When not asking for specific tool data) ──
+    // ── 2. WEBSITE & OPERATIONAL HOW-TO GUIDANCE ──
     const isHowToQuestion =
       lastUserMsg.includes('how to') ||
       lastUserMsg.includes('how do i') ||
@@ -370,6 +378,7 @@ export class ModelAdapter {
       lastUserMsg.includes('help me') ||
       lastUserMsg.includes('what features') ||
       lastUserMsg.includes('overview') ||
+      lastUserMsg.includes('improve') ||
       lastUserMsg.includes('about dukaanai');
 
     if (isHowToQuestion) {
@@ -384,11 +393,11 @@ export class ModelAdapter {
         };
       }
 
-      if (lastUserMsg.includes('finance') || lastUserMsg.includes('profit') || lastUserMsg.includes('expense') || lastUserMsg.includes('cogs')) {
+      if (lastUserMsg.includes('finance') || lastUserMsg.includes('profit') || lastUserMsg.includes('margin') || lastUserMsg.includes('expense') || lastUserMsg.includes('cogs')) {
         return {
           message: {
             role: 'assistant',
-            content: `### 💰 Understanding Finance & Recording Expenses (/finance)\n\n- **Recorded Sales**: Live gross collections from completed POS bills.\n- **Cost of Goods Sold (COGS)**: Wholesale purchase cost basis of items sold.\n- **Gross Profit**: Recorded Sales minus COGS.\n- **Operating Expenses**: Daily shop overheads (Electricity, Helper Wages, Mandi Freight, Packaging).\n\n💡 **How to Record an Expense**:\n1. Click **💸 Quick Expense** on the Dashboard.\n2. Or go to **Finance (/finance)**, fill in category (e.g. *Electricity*), amount (₹), and notes, and click **Save Expense**.\n3. Or tell me in chat: *"Record 500 Rs for helper wages"*!`,
+            content: `### 💰 Strategies to Maximize Kirana Profit Margins & Finance (/finance)\n\n1. **Procure Direct from Wholesalers**: Use the **/suppliers** directory to negotiate bulk crate discounts from distributors (e.g. *Shree Ganesh Wholesale*, *Metro Cash & Carry*) rather than paying retail intermediary margins.\n2. **Prioritize High-Margin FMCG**: Promote items with higher margins (spices, tea, pulses, personal care at 15–25% margin) next to staple commodities (flour, sugar, oil at 4–8% margin).\n3. **Track Operating Overheads**: Regularly record daily shop expenses (Electricity, Helper Wages, Mandi Freight) via the **💸 Quick Expense** button.\n4. **Eliminate Dead Stock**: Check the **Low-Stock Safety Radar** on your dashboard to replenish fast-turning items and avoid locking capital in slow-moving SKUs.\n5. **Settle Customer Khata Promptly**: Recover pending Khata balances within 15–30 days to keep working capital liquid.`,
           },
           finishReason: 'stop',
           durationMs: Date.now() - startTime,
@@ -427,16 +436,6 @@ export class ModelAdapter {
           durationMs: Date.now() - startTime,
         };
       }
-
-      // General website overview
-      return {
-        message: {
-          role: 'assistant',
-          content: `### 🌟 Welcome to DukaanAI — Kirana Store Operating System!\n\nHere are all the key sections available on the website:\n\n1. **📊 Dashboard (/dashboard)**: Live Store Pulse, Today's & 7-day sales, revenue chart, AI insights, and safety radar.\n2. **🛒 POS Counter (/pos)**: Fast barcode scanning, UPI QR generator, Cash change calculation, and Khata ledger billing.\n3. **🧾 Sales Register (/sales)**: Searchable bill history with itemized invoice modals.\n4. **📦 Products (/products)**: Catalog with MRP, costs, and EAN-13 barcodes.\n5. **📋 Inventory (/inventory)**: Real-time stock levels, reorder thresholds, and stock adjustments.\n6. **🚚 Suppliers & POs (/suppliers, /purchases)**: Wholesale distributors and procurement workflows.\n7. **💰 Finance (/finance)**: COGS, gross profit margins, and expense tracking.\n8. **📈 Analytics (/analytics)**: Interactive revenue charts, payment splits, and product leaderboards.\n9. **🤖 DukaanAI Munimji (/ai)**: Autonomous procurement and Hindi/Marathi voice negotiations.\n\nAsk me anything about how to use any of these sections!`,
-        },
-        finishReason: 'stop',
-        durationMs: Date.now() - startTime,
-      };
     }
 
     // Default conversational reply
