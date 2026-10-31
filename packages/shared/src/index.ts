@@ -2,6 +2,7 @@ import { z } from 'zod';
 
 export * from './suppliers/index.js';
 export * from './procurement/index.js';
+export * from './sales/index.js';
 
 export const authContextSchema = z.object({
   userId: z.string().min(1),
@@ -10,35 +11,46 @@ export const authContextSchema = z.object({
 });
 export type AuthContext = z.infer<typeof authContextSchema>;
 
-export const successEnvelope = <T>(data: T, requestId: string) => ({ data, meta: { requestId } });
-export const errorEnvelope = (code: string, message: string, requestId: string, details: unknown[] = []) => ({
-  error: { code, message, details, requestId },
-});
+export interface ApiResponse<T> {
+  success: boolean;
+  data?: T;
+  error?: {
+    code: string;
+    message: string;
+    details?: unknown;
+  };
+  meta?: {
+    requestId?: string;
+    pagination?: {
+      page: number;
+      pageSize: number;
+      total: number;
+      totalPages?: number;
+    };
+  };
+}
 
-export const apiErrorCodes = [
-  'VALIDATION_ERROR', 'UNAUTHENTICATED', 'FORBIDDEN', 'NOT_FOUND', 'CONFLICT',
-  'INSUFFICIENT_STOCK', 'RATE_LIMITED', 'INTERNAL_ERROR', 'DEPENDENCY_UNAVAILABLE',
-] as const;
-export type ApiErrorCode = (typeof apiErrorCodes)[number];
+export function successEnvelope<T>(data: T, requestId?: string): ApiResponse<T> {
+  return {
+    success: true,
+    data,
+    meta: requestId ? { requestId } : undefined,
+  };
+}
 
-export const domainEventSchema = z.object({
-  eventId: z.string().uuid(),
-  eventType: z.string().min(1),
-  payloadVersion: z.number().int().positive(),
-  storeId: z.string().min(1),
-  entityType: z.string().min(1),
-  entityId: z.string().min(1),
-  occurredAt: z.string().datetime(),
-  actor: z.object({ type: z.enum(['USER', 'SYSTEM', 'AI']), id: z.string().optional() }),
-  payload: z.unknown(),
-});
-export type DomainEvent = z.infer<typeof domainEventSchema>;
+export function errorEnvelope(code: string, message: string, requestId?: string, details?: unknown): ApiResponse<never> {
+  return {
+    success: false,
+    error: { code, message, details },
+    meta: requestId ? { requestId } : undefined,
+  };
+}
 
 export const createExpenseSchema = z.object({
-  category: z.string().trim().min(1).max(80),
-  description: z.string().trim().max(500).optional(),
-  amount: z.string().regex(/^\d{1,10}(\.\d{1,2})?$/).refine((value) => Number(value) > 0, 'Amount must be greater than zero.'),
-  currency: z.literal('INR').default('INR'),
+  category: z.string().min(1).max(80),
+  description: z.string().max(500).optional(),
+  amount: z.string().regex(/^\d{1,10}(\.\d{1,2})?$/, 'Must be a valid decimal amount with up to 2 decimal places'),
+  currency: z.string().length(3).default('INR'),
   occurredAt: z.string().datetime(),
 });
 export type CreateExpenseInput = z.infer<typeof createExpenseSchema>;
@@ -118,6 +130,7 @@ export interface StockChangeResult {
   newQuantity: string;
   difference: string;
   movementId: string;
+  isDuplicate?: boolean;
 }
 
 export interface BarcodeLookupResult {
