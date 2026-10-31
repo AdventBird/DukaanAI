@@ -14,28 +14,36 @@ enum UserRole {
 }
 
 model Store {
-  id        String      @id @default(uuid())
-  name      String
-  currency  String      @default("INR")
-  timezone  String      @default("Asia/Kolkata")
-  isDemo    Boolean     @default(false)
-  users     User[]
-  expenses  Expense[]
-  events    OutboxEvent[]
-  auditLogs AuditLog[]
-  createdAt DateTime    @default(now())
-  updatedAt DateTime    @updatedAt
+  id                String             @id @default(uuid())
+  name              String
+  currency          String             @default("INR")
+  timezone          String             @default("Asia/Kolkata")
+  isDemo            Boolean            @default(false)
+  users             User[]
+  expenses          Expense[]
+  events            OutboxEvent[]
+  auditLogs         AuditLog[]
+  categories        Category[]
+  products          Product[]
+  productBarcodes   ProductBarcode[]
+  inventoryBalances InventoryBalance[]
+  stockMovements    StockMovement[]
+  sales             Sale[]
+  payments          Payment[]
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
 }
 
 model User {
-  id        String   @id @default(uuid())
-  storeId   String
-  store     Store    @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  id          String   @id @default(uuid())
+  storeId     String
+  store       Store    @relation(fields: [storeId], references: [id], onDelete: Cascade)
   displayName String
-  loginId   String
-  role      UserRole @default(OWNER)
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  loginId     String
+  role        UserRole @default(OWNER)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
   @@unique([storeId, loginId])
   @@index([storeId, role])
 }
@@ -51,6 +59,7 @@ model Expense {
   occurredAt  DateTime
   createdById String
   createdAt   DateTime @default(now())
+
   @@index([storeId, occurredAt])
 }
 
@@ -64,23 +73,237 @@ model AuditLog {
   entityId   String?
   metadata   Json?
   createdAt  DateTime @default(now())
+
   @@index([storeId, createdAt])
 }
 
 model OutboxEvent {
-  id             String   @id @default(uuid())
+  id             String    @id @default(uuid())
   storeId        String
-  store          Store    @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  store          Store     @relation(fields: [storeId], references: [id], onDelete: Cascade)
   eventType      String
-  payloadVersion Int      @default(1)
+  payloadVersion Int       @default(1)
   entityType     String
   entityId       String
   payload        Json
-  occurredAt     DateTime @default(now())
+  occurredAt     DateTime  @default(now())
   processedAt    DateTime?
-  attempts       Int      @default(0)
+  attempts       Int       @default(0)
   lastError      String?
-  createdAt      DateTime @default(now())
+  createdAt      DateTime  @default(now())
+
   @@index([processedAt, createdAt])
   @@index([storeId, createdAt])
+}
+
+// ==========================================
+// Product & Inventory Domain Models (Dev 1)
+// ==========================================
+
+enum StockUnit {
+  PIECE
+  KG
+  GRAM
+  LITRE
+  MILLILITRE
+  PACKET
+  BOX
+}
+
+enum StockMovementType {
+  OPENING
+  SALE
+  PURCHASE_RECEIPT
+  MANUAL_ADJUSTMENT
+  DAMAGE
+  EXPIRY
+  CUSTOMER_RETURN
+  REVERSAL
+}
+
+model Category {
+  id        String    @id @default(uuid())
+  storeId   String
+  name      String
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  store     Store     @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  products  Product[]
+
+  @@unique([storeId, name])
+  @@index([storeId])
+}
+
+model Product {
+  id                   String             @id @default(uuid())
+  storeId              String
+  sku                  String?
+  name                 String
+  brand                String?
+  categoryId           String
+  description          String?
+  stockUnit            StockUnit          @default(PIECE)
+  purchasePackLabel    String?            // e.g. "Carton (12 pcs)", "Bag (25 kg)"
+  unitsPerPurchasePack Decimal?           @db.Decimal(12, 3) // Factor to convert purchase pack into stockUnit
+  mrp                  Decimal?           @db.Decimal(10, 2)
+  sellingPrice         Decimal            @db.Decimal(10, 2)
+  purchaseCost         Decimal?           @db.Decimal(10, 2)
+  reorderLevel         Decimal            @default(0) @db.Decimal(12, 3)
+  isActive             Boolean            @default(true) // Soft archive
+  createdAt            DateTime           @default(now())
+  updatedAt            DateTime           @updatedAt
+
+  store                Store              @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  category             Category           @relation(fields: [categoryId], references: [id])
+  barcodes             ProductBarcode[]
+  inventoryBalance     InventoryBalance?
+  stockMovements       StockMovement[]
+  saleItems            SaleItem[]
+
+  @@unique([storeId, sku])
+  @@index([storeId, isActive])
+  @@index([storeId, categoryId])
+  @@index([storeId, name])
+}
+
+model ProductBarcode {
+  id        String   @id @default(uuid())
+  storeId   String
+  productId String
+  barcode   String   // String type to strictly preserve leading zeros
+  symbology String?  // EAN-13, EAN-8, UPC-A, etc.
+  isPrimary Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  store     Store    @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  product   Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@unique([storeId, barcode])
+  @@index([storeId, productId])
+}
+
+model InventoryBalance {
+  id             String   @id @default(uuid())
+  storeId        String
+  productId      String   @unique
+  quantityOnHand Decimal  @default(0) @db.Decimal(12, 3)
+  updatedAt      DateTime @updatedAt
+
+  store          Store    @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  product        Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@unique([storeId, productId])
+  @@index([storeId])
+}
+
+model StockMovement {
+  id             String            @id @default(uuid())
+  storeId        String
+  productId      String
+  movementType   StockMovementType
+  quantityDelta  Decimal           @db.Decimal(12, 3) // Signed: Positive = added, Negative = deducted
+  unit           String            // Snapshot of unit
+  reason         String?           // Mandatory for manual adjustments
+  referenceType  String?           // e.g. "SALE", "PURCHASE_RECEIPT", "STOCKTAKE"
+  referenceId    String?           // saleId, goodsReceiptId, etc.
+  idempotencyKey String?           @unique // Prevents duplicate updates
+  actorType      String?           // "OWNER", "STAFF", "SYSTEM", "AI"
+  actorId        String?
+  createdAt      DateTime          @default(now()) // Strictly append-only
+
+  store          Store             @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  product        Product           @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@index([storeId, productId, createdAt])
+  @@index([storeId, movementType])
+  @@index([idempotencyKey])
+}
+
+// ==========================================
+// Sales & POS Domain Models (Dev 2)
+// ==========================================
+
+enum SaleStatus {
+  COMPLETED
+  CANCELLED
+}
+
+enum PaymentMethod {
+  CASH
+  UPI
+  CREDIT
+}
+
+enum PaymentStatus {
+  COMPLETED
+  PENDING
+  FAILED
+}
+
+model Sale {
+  id             String        @id @default(uuid())
+  storeId        String
+  receiptNumber  String
+  status         SaleStatus    @default(COMPLETED)
+  subtotal       Decimal       @db.Decimal(12, 2)
+  discountTotal  Decimal       @default(0) @db.Decimal(12, 2)
+  total          Decimal       @db.Decimal(12, 2)
+  paymentStatus  PaymentStatus @default(COMPLETED)
+  paymentMethod  PaymentMethod @default(CASH)
+  amountPaid     Decimal       @db.Decimal(12, 2)
+  changeDue      Decimal       @default(0) @db.Decimal(12, 2)
+  balanceDue     Decimal       @default(0) @db.Decimal(12, 2)
+  customerLabel  String?
+  idempotencyKey String        @unique
+  createdBy      String        @default("cashier")
+  createdAt      DateTime      @default(now())
+  completedAt    DateTime?
+
+  store          Store         @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  items          SaleItem[]
+  payments       Payment[]
+
+  @@unique([storeId, receiptNumber])
+  @@index([storeId, createdAt])
+  @@index([storeId, paymentMethod])
+  @@index([idempotencyKey])
+}
+
+model SaleItem {
+  id                  String   @id @default(uuid())
+  saleId              String
+  productId           String
+  productNameSnapshot String
+  barcodeSnapshot     String?
+  stockUnitSnapshot   String
+  quantity            Decimal  @db.Decimal(12, 3)
+  unitPriceSnapshot   Decimal  @db.Decimal(12, 2)
+  unitCostSnapshot    Decimal? @db.Decimal(12, 2)
+  lineTotal           Decimal  @db.Decimal(12, 2)
+
+  sale                Sale     @relation(fields: [saleId], references: [id], onDelete: Cascade)
+  product             Product  @relation(fields: [productId], references: [id])
+
+  @@index([saleId])
+  @@index([productId])
+}
+
+model Payment {
+  id         String        @id @default(uuid())
+  storeId    String
+  saleId     String
+  method     PaymentMethod
+  amount     Decimal       @db.Decimal(12, 2)
+  status     PaymentStatus @default(COMPLETED)
+  reference  String?
+  occurredAt DateTime      @default(now())
+  recordedBy String        @default("cashier")
+  createdAt  DateTime      @default(now())
+
+  store      Store         @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  sale       Sale          @relation(fields: [saleId], references: [id], onDelete: Cascade)
+
+  @@index([storeId, occurredAt])
+  @@index([saleId])
 }

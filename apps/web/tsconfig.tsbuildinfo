@@ -1,1 +1,1 @@
-{"root":["./src/main.tsx","./src/features/suppliers/supplierspage.tsx"],"version":"5.9.3"}
+{"root":["./src/main.tsx","./src/features/inventory/inventorypage.tsx","./src/features/products/productspage.tsx","./src/features/suppliers/supplierspage.tsx"],"version":"5.9.3"}

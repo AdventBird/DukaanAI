@@ -4,6 +4,8 @@ import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
 import { LayoutDashboard, ShoppingCart, Package, Boxes, ReceiptText, Truck, Wallet, Bot, BarChart3 } from 'lucide-react';
 import './styles.css';
 import { SuppliersPage } from './features/suppliers/SuppliersPage.js';
+import { POSPage } from './features/pos/POSPage.js';
+import { SalesHistoryPage } from './features/pos/SalesHistoryPage.js';
 
 const nav = [
   { label: 'Overview', path: '/dashboard', icon: LayoutDashboard },
@@ -343,10 +345,12 @@ function App() {
       <Routes>
         <Route path="/" element={<Navigate to="/dashboard" replace />} />
         <Route path="/dashboard" element={<Dashboard />} />
+        <Route path="/pos" element={<POSPage />} />
+        <Route path="/sales" element={<SalesHistoryPage />} />
         <Route path="/suppliers" element={<SuppliersPage initialTab="suppliers" />} />
         <Route path="/purchases" element={<SuppliersPage initialTab="orders" />} />
         <Route path="/finance" element={<FinancePage />} />
-        {nav.slice(1).filter(n => n.path !== '/suppliers' && n.path !== '/finance').map(({ label, path }) => (
+        {nav.slice(1).filter(n => n.path !== '/suppliers' && n.path !== '/finance' && n.path !== '/pos' && n.path !== '/sales').map(({ label, path }) => (
           <Route key={path} path={path} element={<Placeholder title={label} />} />
         ))}
         <Route path="*" element={<Navigate to="/dashboard" replace />} />
