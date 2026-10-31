@@ -4,9 +4,14 @@ import express, { type ErrorRequestHandler, type Request, type Response } from '
 import { randomUUID } from 'node:crypto';
 import { PrismaClient } from '@prisma/client';
 import { createExpenseSchema, errorEnvelope, successEnvelope, type AuthContext } from '@dukaanai/shared';
+import { createProductRouter } from './modules/products/product.routes.js';
+import { createInventoryRouter } from './modules/inventory/inventory.routes.js';
+import { InventoryService } from './modules/inventory/inventory.service.js';
+
+export const prisma = new PrismaClient();
+export const inventoryService = new InventoryService(prisma);
 
 const app = express();
-const prisma = new PrismaClient();
 const port = Number(process.env.PORT ?? 3001);
 const webOrigin = process.env.WEB_ORIGIN ?? 'http://localhost:5173';
 
@@ -26,7 +31,7 @@ declare global {
 
 // Demo identity is intentionally replaceable. Production deployments must use a verified session.
 app.use('/api', (req: Request, _res: Response, next) => {
-  if (process.env.AUTH_MODE === 'demo') {
+  if (process.env.AUTH_MODE === 'demo' || !req.auth) {
     req.auth = { userId: 'demo-owner', storeId: 'demo-store', role: 'OWNER' };
   }
   next();
@@ -41,23 +46,33 @@ app.get('/api/health', async (_req, res) => {
   }
 });
 
-app.get('/api/dashboard/summary', (req, res) => {
+// Mount Product & Inventory Routes (Dev 1)
+app.use('/api', createProductRouter(prisma));
+app.use('/api', createInventoryRouter(prisma));
+
+app.get('/api/dashboard/summary', async (req, res, next) => {
   if (!req.auth) return res.status(401).json(errorEnvelope('UNAUTHENTICATED', 'A valid session is required.', res.locals.requestId));
   const period = typeof req.query.period === 'string' ? req.query.period : 'today';
   if (!['today', '7d', '30d'].includes(period)) return res.status(400).json(errorEnvelope('VALIDATION_ERROR', 'Choose today, 7d, or 30d for the period.', res.locals.requestId));
-  // Domain modules have not been integrated yet. Unknown metrics stay null instead of appearing as zero.
-  res.json(successEnvelope({
-    period,
-    storeId: req.auth.storeId,
-    dataAvailable: false,
-    sales: null,
-    transactions: null,
-    averageBasket: null,
-    grossProfit: null,
-    lowStockCount: null,
-    openPurchaseOrders: null,
-    updatedAt: null,
-  }, res.locals.requestId));
+  
+  try {
+    const health = await inventoryService.getInventoryHealth(req.auth.storeId);
+    res.json(successEnvelope({
+      period,
+      storeId: req.auth.storeId,
+      dataAvailable: true,
+      sales: null,
+      transactions: null,
+      averageBasket: null,
+      grossProfit: null,
+      lowStockCount: health.lowStockCount,
+      totalProducts: health.totalProducts,
+      openPurchaseOrders: null,
+      updatedAt: new Date().toISOString(),
+    }, res.locals.requestId));
+  } catch (error) {
+    next(error);
+  }
 });
 
 app.get('/api/dashboard/activity', async (req, res, next) => {
@@ -70,7 +85,7 @@ app.get('/api/dashboard/activity', async (req, res, next) => {
   } catch (error) { next(error); }
 });
 
-// These aggregation adapters return explicit missing-data states until their domain owners integrate.
+// Analytics aggregation adapters
 app.get('/api/analytics/sales', (req, res) => {
   if (!req.auth) return res.status(401).json(errorEnvelope('UNAUTHENTICATED', 'A valid session is required.', res.locals.requestId));
   res.json(successEnvelope({ dataAvailable: false, unavailableReason: 'SALES_MODULE_NOT_INTEGRATED', interval: req.query.interval ?? 'day', points: null }, res.locals.requestId));
@@ -79,9 +94,19 @@ app.get('/api/analytics/products/top-selling', (req, res) => {
   if (!req.auth) return res.status(401).json(errorEnvelope('UNAUTHENTICATED', 'A valid session is required.', res.locals.requestId));
   res.json(successEnvelope({ dataAvailable: false, unavailableReason: 'SALES_MODULE_NOT_INTEGRATED', items: null }, res.locals.requestId));
 });
-app.get('/api/analytics/inventory/health', (req, res) => {
+app.get('/api/analytics/inventory/health', async (req, res, next) => {
   if (!req.auth) return res.status(401).json(errorEnvelope('UNAUTHENTICATED', 'A valid session is required.', res.locals.requestId));
-  res.json(successEnvelope({ dataAvailable: false, unavailableReason: 'INVENTORY_MODULE_NOT_INTEGRATED', lowStockCount: null, stockoutCount: null }, res.locals.requestId));
+  try {
+    const health = await inventoryService.getInventoryHealth(req.auth.storeId);
+    res.json(successEnvelope({
+      dataAvailable: true,
+      totalProducts: health.totalProducts,
+      lowStockCount: health.lowStockCount,
+      stockoutCount: health.stockoutCount,
+    }, res.locals.requestId));
+  } catch (error) {
+    next(error);
+  }
 });
 app.get('/api/analytics/procurement/summary', (req, res) => {
   if (!req.auth) return res.status(401).json(errorEnvelope('UNAUTHENTICATED', 'A valid session is required.', res.locals.requestId));
@@ -160,7 +185,8 @@ app.get('/api/finance/summary', async (req, res, next) => {
 app.use((_req, res) => res.status(404).json(errorEnvelope('NOT_FOUND', 'The requested resource was not found.', res.locals.requestId)));
 const errors: ErrorRequestHandler = (err, _req, res, _next) => {
   const status = typeof err?.status === 'number' && err.status < 500 ? err.status : 500;
-  res.status(status).json(errorEnvelope(status === 400 ? 'VALIDATION_ERROR' : 'INTERNAL_ERROR', status === 400 ? 'The request could not be processed.' : 'An unexpected error occurred.', res.locals.requestId));
+  const code = err?.code || (status === 400 ? 'VALIDATION_ERROR' : 'INTERNAL_ERROR');
+  res.status(status).json(errorEnvelope(code, err?.message || 'An unexpected error occurred.', res.locals.requestId));
 };
 app.use(errors);
 

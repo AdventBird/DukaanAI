@@ -2,6 +2,8 @@ import React, { useCallback, useEffect, useState } from 'react';
 import ReactDOM from 'react-dom/client';
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
 import { LayoutDashboard, ShoppingCart, Package, Boxes, ReceiptText, Truck, Wallet, Bot, BarChart3 } from 'lucide-react';
+import { ProductsPage } from './features/products/ProductsPage';
+import { InventoryPage } from './features/inventory/InventoryPage';
 import './styles.css';
 
 const nav = [
@@ -30,14 +32,14 @@ function Dashboard() {
     {summaryError && <div className="error-banner" role="status">Dashboard data is unavailable: {summaryError}</div>}
     <section className="kpi-grid" aria-label="Today's key figures"><Metric label="Today's sales" value={formatRupees(summary?.sales ?? null)} caption={summary?.dataAvailable?'Recorded completed sales':'Connect POS & sales'} icon="₹"/><Metric label="Transactions" value={summary?.transactions?.toLocaleString('en-IN') ?? '—'} caption="Completed sales today" icon="▤"/><Metric label="Average basket" value={formatRupees(summary?.averageBasket ?? null)} caption="Based on today's sales" icon="↗"/><Metric label="Gross profit" value={formatRupees(summary?.grossProfit ?? null)} caption="Needs historical cost data" icon="◒"/></section>
     <div className="section-heading"><div><h2>Store operations</h2><p>Keep an eye on the things that need attention.</p></div></div>
-    <section className="ops-grid"><article className="panel ops-card"><div className="panel-icon amber"><Boxes size={19}/></div><div><h3>Inventory health</h3><p>Stock levels appear here once inventory is connected.</p></div><a href="/inventory" className="text-link">Open inventory <span>→</span></a></article><article className="panel ops-card"><div className="panel-icon blue"><Truck size={19}/></div><div><h3>Purchasing</h3><p>Orders and deliveries will appear here once procurement is connected.</p></div><a href="/purchases" className="text-link">View purchases <span>→</span></a></article></section>
+    <section className="ops-grid"><article className="panel ops-card"><div className="panel-icon amber"><Boxes size={19}/></div><div><h3>Inventory health</h3><p>{summary?.lowStockCount !== null && summary?.lowStockCount !== undefined ? `${summary.lowStockCount} items at or below reorder level.` : 'Stock levels appear here once inventory is connected.'}</p></div><a href="/inventory" className="text-link">Open inventory <span>→</span></a></article><article className="panel ops-card"><div className="panel-icon blue"><Truck size={19}/></div><div><h3>Purchasing</h3><p>Orders and deliveries will appear here once procurement is connected.</p></div><a href="/purchases" className="text-link">View purchases <span>→</span></a></article></section>
     <div className="lower-grid"><section className="panel chart-panel"><div className="panel-header"><div><h2>Sales overview</h2><p>Daily sales over the last 7 days</p></div><a href="/analytics" className="text-link">Analytics <span>→</span></a></div><div className="empty-chart"><div className="chart-placeholder"><BarChart3 size={28}/></div><b>Not enough data yet</b><span>Sales trends will show here when completed transactions are available.</span></div></section><section className="panel activity-panel"><div className="panel-header"><div><h2>Recent activity</h2><p>Updates from across your store</p></div></div>{activityError?<div className="empty-activity"><span className="activity-icon"><ReceiptText size={18}/></span><div><b>Activity unavailable</b><p>{activityError}</p></div></div>:activity?.length?<div className="activity-list">{activity.map(item=><div className="activity-row" key={item.id}><span className="activity-icon"><ReceiptText size={16}/></span><div><b>{item.action==='expense.recorded'?'Expense recorded':item.action.replaceAll('.',' ')}</b><p>{item.details?.category || item.entityType}</p></div><time>{new Intl.DateTimeFormat('en-IN',{hour:'numeric',minute:'2-digit',timeZone:'Asia/Kolkata'}).format(new Date(item.occurredAt))}</time></div>)}</div>:<div className="empty-activity"><span className="activity-icon"><ReceiptText size={18}/></span><div><b>Nothing to show yet</b><p>New sales, stock updates, and purchase activity will show here.</p></div></div>}</section></div>
     <footer>Data status: {summary?.dataAvailable?'Connected':'waiting for module connections'} <span>·</span> Last updated {summary?.updatedAt ?? '—'}</footer></>;
 }
 function Metric({label,value,caption,icon}:{label:string;value:string;caption:string;icon:string}) { return <article className="panel metric"><div className="metric-top"><span>{label}</span><span className="metric-icon">{icon}</span></div><strong>{value}</strong><small>{caption}</small></article>; }
 function Placeholder({ title }: {title:string}) { return <div className="page-heading"><div><p className="eyebrow">DUKAANAI</p><h1>{title}</h1><p className="subhead">This area is ready for its feature module.</p></div></div>; }
 type Expense = { id:string; category:string; description:string|null; amount:string; currency:string; occurredAt:string };
-type DashboardSummary = { dataAvailable:boolean; sales:string|null; transactions:number|null; averageBasket:string|null; grossProfit:string|null; updatedAt:string|null };
+type DashboardSummary = { dataAvailable:boolean; sales:string|null; transactions:number|null; averageBasket:string|null; grossProfit:string|null; lowStockCount?:number|null; totalProducts?:number|null; updatedAt:string|null };
 type ActivityItem = { id:string; action:string; entityType:string; entityId:string|null; details:{category?:string}|null; occurredAt:string };
 type FinanceSummary = { recordedExpenses:string; expenseCount:number; revenue:string|null; costOfGoodsSold:string|null; grossProfit:string|null; estimatedOperatingResult:string|null };
 const apiBase = import.meta.env.VITE_API_BASE_URL || 'http://localhost:3001/api';
@@ -81,6 +83,24 @@ function FinancePage() {
       <section className="panel finance-list-panel"><div className="panel-header"><div><h2>Recent expenses</h2><p>Recorded expenses for this store</p></div></div>{loading?<p className="finance-loading">Loading expenses…</p>:expenses.length===0?<div className="finance-empty"><b>No expenses recorded</b><span>Expenses you add will appear here.</span></div>:<div className="expense-list">{expenses.map(item=><div className="expense-row" key={item.id}><span className="expense-dot">−</span><div className="expense-description"><b>{item.category}</b><small>{item.description || new Intl.DateTimeFormat('en-IN',{dateStyle:'medium',timeZone:'Asia/Kolkata'}).format(new Date(item.occurredAt))}</small></div><strong>{formatRupees(item.amount)}</strong></div>)}</div>}</section></div>
     <footer>Money amounts are based on manually recorded data. This is not statutory accounting.</footer></>;
 }
-function App() { return <Shell><Routes><Route path="/" element={<Navigate to="/dashboard" replace/>}/><Route path="/dashboard" element={<Dashboard/>}/>{nav.slice(1).map(({label,path})=><Route key={path} path={path} element={path==='/finance'?<FinancePage/>:<Placeholder title={label}/>}/>) }<Route path="*" element={<Navigate to="/dashboard" replace/>}/></Routes></Shell>; }
+function App() {
+  return (
+    <Shell>
+      <Routes>
+        <Route path="/" element={<Navigate to="/dashboard" replace />} />
+        <Route path="/dashboard" element={<Dashboard />} />
+        <Route path="/products" element={<ProductsPage />} />
+        <Route path="/inventory" element={<InventoryPage />} />
+        <Route path="/finance" element={<FinancePage />} />
+        {nav
+          .filter((n) => !['/dashboard', '/products', '/inventory', '/finance'].includes(n.path))
+          .map(({ label, path }) => (
+            <Route key={path} path={path} element={<Placeholder title={label} />} />
+          ))}
+        <Route path="*" element={<Navigate to="/dashboard" replace />} />
+      </Routes>
+    </Shell>
+  );
+}
 
 ReactDOM.createRoot(document.getElementById('root')!).render(<React.StrictMode><BrowserRouter><App/></BrowserRouter></React.StrictMode>);
