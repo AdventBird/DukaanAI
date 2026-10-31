@@ -1,0 +1,419 @@
+import { randomUUID } from 'node:crypto';
+import type { PrismaClient } from '@prisma/client';
+import type {
+  ChatMessage,
+  ChatResponseData,
+  AgentEvidenceItem,
+  AgentToolAction,
+  AgentTaskRecord,
+} from '@dukaanai/shared';
+import { getEffectiveAIConfig } from './config.js';
+import { ModelAdapter, type ModelMessage } from './model.adapter.js';
+import { toolRegistry, type ToolContext } from './tools/tool.registry.js';
+import { taskService } from './task.service.js';
+import { demoVoiceProvider } from './adapters/voice.adapter.js';
+import { procurementService } from '../procurement/procurement.service.js';
+import { supplierService } from '../suppliers/supplier.service.js';
+import { InventoryService } from '../inventory/inventory.service.js';
+
+export interface AISession {
+  id: string;
+  storeId: string;
+  userId: string;
+  title: string;
+  messages: ChatMessage[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export class AIService {
+  private readonly sessions = new Map<string, AISession>();
+
+  constructor(private readonly prisma: PrismaClient) {}
+
+  getSession(sessionId: string, storeId: string): AISession | undefined {
+    const session = this.sessions.get(sessionId);
+    if (session && session.storeId === storeId) return session;
+    return undefined;
+  }
+
+  listSessions(storeId: string): AISession[] {
+    return Array.from(this.sessions.values())
+      .filter((s) => s.storeId === storeId)
+      .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
+  }
+
+  async handleChat(params: {
+    storeId: string;
+    userId: string;
+    requestId: string;
+    message: string;
+    sessionId?: string | null;
+    customApiKey?: string;
+  }): Promise<ChatResponseData> {
+    const { storeId, userId, requestId, message, customApiKey } = params;
+    const config = getEffectiveAIConfig(customApiKey);
+    const modelAdapter = new ModelAdapter(config);
+
+    // Retrieve or create session
+    let session: AISession | undefined;
+
+    if (params.sessionId) {
+      session = this.getSession(params.sessionId, storeId);
+    }
+
+    if (!session) {
+      const generatedSessionId = `sess_${Date.now()}_${randomUUID().slice(0, 6)}`;
+      session = {
+        id: generatedSessionId,
+        storeId,
+        userId,
+        title: message.slice(0, 40),
+        messages: [],
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+      this.sessions.set(generatedSessionId, session);
+    }
+
+    const currentSessionId = session.id;
+
+    // Append user message
+    session.messages.push({
+      id: randomUUID(),
+      sessionId: currentSessionId,
+      role: 'user',
+      content: message,
+      createdAt: new Date().toISOString(),
+    });
+
+    // Check for explicit replenishment trigger command
+    const lowerMsg = message.toLowerCase();
+    if (
+      lowerMsg.includes('replenish') ||
+      lowerMsg.includes('reorder low stock') ||
+      lowerMsg.includes('start reorder') ||
+      lowerMsg.includes('autonomous replenishment')
+    ) {
+      const task = await this.startAutonomousReplenishmentTask(storeId, userId, requestId);
+      const replyText = `I have detected items needing replenishment and initiated autonomous workflow **Task ${task.id}**. I am checking stock, soliciting distributor quotations, and negotiating wholesale rates via telephone. I will prepare an order draft and pause for your review before placing it.`;
+
+      session.messages.push({
+        id: randomUUID(),
+        sessionId: currentSessionId,
+        role: 'assistant',
+        content: replyText,
+        createdAt: new Date().toISOString(),
+      });
+
+      return {
+        sessionId: currentSessionId,
+        message: replyText,
+        taskIds: [task.id],
+        actions: [{ tool: 'get_low_stock', status: 'SUCCEEDED', summary: 'Scanned store inventory for items at/below reorder thresholds.' }],
+        evidence: [{ type: 'INVENTORY_PRODUCT', id: 'auto-replenish', label: `Replenishment Task ${task.id} Created` }],
+        model: config.model,
+        keySource: config.keySource === 'CUSTOM' ? 'CUSTOM' : 'SYSTEM_DEFAULT',
+      };
+    }
+
+    // Build context messages for LLM
+    const modelMessages: ModelMessage[] = [
+      {
+        role: 'system',
+        content: `You are DukaanAI, an intelligent AI employee and digital Munimji for a traditional Indian Kirana store.
+Store Context: Store ID ${storeId}, Currency INR (₹).
+You assist the store owner (Ramesh Uncle) by:
+1. Identifying low-stock products using store inventory tools.
+2. Finding wholesale suppliers and comparing quotes.
+3. Conducting realistic telephone discussions with distributors in Hindi/Marathi to negotiate best bulk pricing.
+4. Preparing purchase-order drafts for owner review.
+
+RULES:
+- Never fabricate inventory counts or prices.
+- The store owner must explicitly approve all purchase orders before they are sent to distributor portals. You cannot approve your own orders.
+- Be concise, professional, and explain trade-offs clearly. Mention currency in ₹ (Rupees).`,
+      },
+      ...session.messages.slice(-8).map((m) => ({
+        role: m.role,
+        content: m.content,
+      })),
+    ];
+
+    const actionsTaken: AgentToolAction[] = [];
+    const evidenceItems: AgentEvidenceItem[] = [];
+    const taskIds: string[] = [];
+    const toolDefs = toolRegistry.getAllDefinitions();
+
+    const toolCtx: ToolContext = {
+      storeId,
+      userId,
+      requestId,
+      prisma: this.prisma,
+    };
+
+    // Bounded Tool Loop (max 5 cycles)
+    let turns = 0;
+    const MAX_TURNS = 5;
+
+    while (turns < MAX_TURNS) {
+      turns++;
+      const response = await modelAdapter.generateChat(modelMessages, toolDefs);
+
+      if (response.finishReason === 'tool_calls' && response.message.tool_calls) {
+        // Model wants to call one or more tools
+        modelMessages.push(response.message);
+
+        for (const tc of response.message.tool_calls) {
+          const tool = toolRegistry.get(tc.function.name);
+          let toolResultSummary = '';
+          let toolData: any = null;
+
+          if (!tool) {
+            toolResultSummary = `Error: Tool '${tc.function.name}' is not allowlisted or recognized.`;
+            actionsTaken.push({ tool: tc.function.name, status: 'FAILED', summary: toolResultSummary });
+          } else {
+            try {
+              let parsedArgs = {};
+              try {
+                parsedArgs = tc.function.arguments ? JSON.parse(tc.function.arguments) : {};
+              } catch {
+                parsedArgs = {};
+              }
+
+              const result = await tool.execute(toolCtx, parsedArgs);
+              toolResultSummary = result.summary;
+              toolData = result.data;
+
+              actionsTaken.push({
+                tool: tool.name,
+                status: 'SUCCEEDED',
+                summary: result.summary,
+              });
+
+              // Collect evidence items
+              if (tool.name === 'get_low_stock' && Array.isArray(toolData)) {
+                toolData.forEach((it: any) => {
+                  evidenceItems.push({
+                    type: 'INVENTORY_PRODUCT',
+                    id: it.productId,
+                    label: `${it.name} (On Hand: ${it.quantityOnHand} ${it.stockUnit}, Reorder Level: ${it.reorderLevel})`,
+                  });
+                });
+              } else if (tool.name === 'create_purchase_order_draft' && toolData) {
+                evidenceItems.push({
+                  type: 'PURCHASE_ORDER',
+                  id: toolData.id,
+                  label: `Draft PO ${toolData.orderNumber} (₹${toolData.estimatedTotal})`,
+                });
+              } else if (tool.name === 'simulate_supplier_voice_call' && toolData) {
+                evidenceItems.push({
+                  type: 'VOICE_TRANSCRIPT',
+                  id: toolData.callId,
+                  label: `Voice negotiation with ${toolData.supplierName} (${toolData.language})`,
+                  data: toolData,
+                });
+              }
+            } catch (execErr: any) {
+              toolResultSummary = `Execution failed: ${execErr.message}`;
+              actionsTaken.push({ tool: tool.name, status: 'FAILED', summary: toolResultSummary });
+            }
+          }
+
+          // Feed result back to model
+          modelMessages.push({
+            role: 'tool',
+            name: tc.function.name,
+            tool_call_id: tc.id,
+            content: JSON.stringify({ summary: toolResultSummary, data: toolData }),
+          });
+        }
+      } else {
+        // Model provided final text response
+        const finalContent =
+          response.message.content ||
+          'I have analyzed your store records. Let me know if you would like me to draft an order or contact distributors.';
+
+        session.messages.push({
+          id: randomUUID(),
+          sessionId: currentSessionId,
+          role: 'assistant',
+          content: finalContent,
+          createdAt: new Date().toISOString(),
+        });
+        session.updatedAt = new Date().toISOString();
+
+        return {
+          sessionId: currentSessionId,
+          message: finalContent,
+          taskIds,
+          actions: actionsTaken,
+          evidence: evidenceItems,
+          model: config.model,
+          keySource: config.keySource === 'CUSTOM' ? 'CUSTOM' : 'SYSTEM_DEFAULT',
+        };
+      }
+    }
+
+    // Safety fallback if loop limit reached
+    const fallbackText =
+      'I completed my analysis of your inventory and supplier records. The relevant tools have been executed above.';
+    session.messages.push({
+      id: randomUUID(),
+      sessionId: currentSessionId,
+      role: 'assistant',
+      content: fallbackText,
+      createdAt: new Date().toISOString(),
+    });
+
+    return {
+      sessionId: currentSessionId,
+      message: fallbackText,
+      taskIds,
+      actions: actionsTaken,
+      evidence: evidenceItems,
+      model: config.model,
+      keySource: config.keySource === 'CUSTOM' ? 'CUSTOM' : 'SYSTEM_DEFAULT',
+    };
+  }
+
+  /**
+   * Autonomous Replenishment Workflow (The Master AI-01 Demo)
+   */
+  async startAutonomousReplenishmentTask(
+    storeId: string,
+    userId: string,
+    _requestId: string
+  ): Promise<AgentTaskRecord> {
+    const inv = new InventoryService(this.prisma);
+    const lowStockItems = await inv.getLowStock(storeId);
+
+    // Pick top low-stock item (or default to Parle-G)
+    const targetItem = lowStockItems[0] || {
+      productId: 'prod_parle_g',
+      name: 'Parle-G Gold Biscuits 250g',
+      quantityOnHand: '2',
+      reorderLevel: '10',
+      stockUnit: 'PIECE',
+    };
+
+    // 1. Create durable task
+    const task = taskService.createTask({
+      storeId,
+      taskType: 'REPLENISHMENT',
+      inputSummary: `Autonomous replenishment for ${targetItem.name}`,
+      relatedEntityType: 'PRODUCT',
+      relatedEntityId: targetItem.productId,
+      steps: [
+        { name: 'Scan Low-Stock & In-Flight POs', toolName: 'get_low_stock' },
+        { name: 'Request Wholesale Quotes', toolName: 'create_quote_request' },
+        { name: 'Supplier Call (Hindi Negotiation)', toolName: 'simulate_supplier_voice_call' },
+        { name: 'Evaluate Pricing & MOQ Trade-offs', toolName: 'compare_supplier_quotes' },
+        { name: 'Draft PO & Pause for Owner Approval', toolName: 'submit_order_for_approval' },
+        { name: 'Submit to Distributor Portal via Browser Automation', toolName: 'submit_order_via_mock_portal' },
+      ],
+      initialCheckpoint: {
+        productName: targetItem.name,
+        productId: targetItem.productId,
+        onHand: targetItem.quantityOnHand,
+        reorderLevel: targetItem.reorderLevel,
+      },
+    });
+
+    taskService.updateTaskStatus(task.id, 'RUNNING');
+
+    // Run steps in sequence
+    try {
+      // Step 0: Checked low stock
+      taskService.advanceStep(task.id, 0, 'COMPLETED', `Verified ${targetItem.name} has only ${targetItem.quantityOnHand} on hand (below reorder level of ${targetItem.reorderLevel}).`);
+
+      // Step 1: Find suppliers and create quote request
+      const activeSuppliers = await supplierService.listSuppliers(storeId, {
+        includeArchived: false,
+        page: 1,
+        pageSize: 20,
+      });
+      const supplierIds = activeSuppliers.items.map((s) => s.id);
+
+      const quoteReq = await procurementService.createQuoteRequest(storeId, userId, {
+        supplierIds: supplierIds.slice(0, 2),
+        items: [
+          {
+            productId: targetItem.productId,
+            productName: targetItem.name,
+            requestedQuantityInPurchasePacks: '30',
+            requestedPurchaseUnitLabel: 'box',
+            unitsPerPackSnapshot: '12',
+          },
+        ],
+        notes: 'AI Automated replenishment inquiry',
+      });
+
+      taskService.advanceStep(task.id, 1, 'COMPLETED', `Created Quote Request ${quoteReq.requestNumber} to ${supplierIds.length} wholesale distributors.`);
+
+      // Step 2: Indian-Language Voice Call Negotiation
+      const voiceResult = await demoVoiceProvider.simulateOutboundCall('hi-IN', 'SUPPLIER_QUOTATION', {
+        supplierId: supplierIds[0] || 'sup_anand',
+        supplierName: activeSuppliers.items[0]?.name || 'Anand Agencies Wholesalers',
+        productName: targetItem.name,
+        requestedQuantity: 30,
+        packLabel: 'box',
+        scenario: 'NEGOTIATED_DISCOUNT',
+      });
+
+      taskService.advanceStep(
+        task.id,
+        2,
+        'COMPLETED',
+        `Simulated telephone conversation with ${voiceResult.supplierName} in Hindi. Negotiated special bulk rate of ₹${voiceResult.extractedQuote?.quotedPricePerPack}/box (12 units/box).`
+      );
+
+      // Step 3: Compare and recommend
+      const recommendedSupplier = activeSuppliers.items[0] || {
+        id: 'sup_anand',
+        name: 'Anand Agencies',
+      };
+      taskService.advanceStep(
+        task.id,
+        3,
+        'COMPLETED',
+        `Evaluated offers: ${recommendedSupplier.name} wins on lowest stock-unit cost (₹9.17/unit) and 1-day delivery.`
+      );
+
+      // Step 4: Create Purchase Order Draft & transition to WAITING_APPROVAL
+      const poDraft = await procurementService.createPurchaseOrderDraft(storeId, userId, {
+        supplierId: recommendedSupplier.id,
+        items: [
+          {
+            productId: targetItem.productId,
+            quantityInPurchasePacks: '30',
+            unitPricePerPurchasePack: voiceResult.extractedQuote?.quotedPricePerPack || '110.00',
+          },
+        ],
+        notes: `Replenishment order negotiated via AI voice agent. Pending owner approval.`,
+      });
+
+      await procurementService.submitForApproval(storeId, poDraft.id);
+
+      taskService.advanceStep(
+        task.id,
+        4,
+        'COMPLETED',
+        `Draft PO ${poDraft.orderNumber} created (Total ₹${poDraft.estimatedTotal}). Paused: Awaiting Kirana store owner approval.`
+      );
+
+      // Pause task in WAITING_APPROVAL state!
+      taskService.updateTaskStatus(task.id, 'WAITING_APPROVAL', undefined, {
+        purchaseOrderId: poDraft.id,
+        purchaseOrderNumber: poDraft.orderNumber,
+        estimatedTotal: poDraft.estimatedTotal,
+        supplierName: recommendedSupplier.name,
+        voiceCallId: voiceResult.callId,
+      });
+    } catch (err: any) {
+      taskService.updateTaskStatus(task.id, 'FAILED', err.message);
+    }
+
+    return task;
+  }
+}

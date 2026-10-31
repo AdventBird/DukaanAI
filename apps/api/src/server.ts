@@ -18,6 +18,9 @@ import { supplierRouter, supplierProductRouter } from './modules/suppliers/suppl
 import { quoteRouter, purchaseOrderRouter, goodsReceiptRouter } from './modules/procurement/procurement.routes.js';
 import { procurementService } from './modules/procurement/procurement.service.js';
 
+// Domain modules (Dev 4: AI Employee & Orchestrator)
+import { createAIRouter } from './modules/ai/ai.routes.js';
+
 const app = express();
 export const prisma = new PrismaClient();
 export const inventoryService = new InventoryService(prisma);
@@ -64,6 +67,7 @@ app.use('/api/supplier-products', supplierProductRouter);
 app.use('/api', quoteRouter);
 app.use('/api/purchase-orders', purchaseOrderRouter);
 app.use('/api/goods-receipts', goodsReceiptRouter);
+app.use('/api/ai', createAIRouter(prisma));
 
 app.get('/api/dashboard/summary', async (req, res, next) => {
   if (!req.auth) return res.status(401).json(errorEnvelope('UNAUTHENTICATED', 'A valid session is required.', res.locals.requestId));
