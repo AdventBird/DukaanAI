@@ -8,7 +8,7 @@
     "build": "tsc -p tsconfig.json --outDir dist",
     "lint": "tsc -p tsconfig.json --noEmit",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "node --test"
+    "test": "tsx --test test/**/*.test.ts"
   },
   "dependencies": {
     "@dukaanai/shared": "*",

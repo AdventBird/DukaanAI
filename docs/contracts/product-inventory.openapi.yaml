@@ -1,0 +1,338 @@
+openapi: 3.0.3
+info:
+  title: DukaanAI Product & Inventory API
+  description: API contract for Product Catalogue and Inventory Management (Dev 1).
+  version: 1.0.0
+servers:
+  - url: /api
+paths:
+  /products:
+    get:
+      summary: Search and list products
+      parameters:
+        - name: search
+          in: query
+          schema:
+            type: string
+        - name: categoryId
+          in: query
+          schema:
+            type: string
+            format: uuid
+        - name: isActive
+          in: query
+          schema:
+            type: boolean
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 1
+        - name: pageSize
+          in: query
+          schema:
+            type: integer
+            default: 20
+      responses:
+        '200':
+          description: List of products with inventory summary
+    post:
+      summary: Create a new product
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateProductInput'
+      responses:
+        '201':
+          description: Product successfully created
+
+  /products/barcode/{barcode}:
+    get:
+      summary: Resolve barcode to active product for POS
+      parameters:
+        - name: barcode
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Active product found for checkout
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BarcodeLookupResponse'
+        '404':
+          description: Barcode not registered in catalogue
+
+  /products/{productId}:
+    get:
+      summary: Get product details and inventory
+      parameters:
+        - name: productId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Product details
+    patch:
+      summary: Update product information or pricing
+      parameters:
+        - name: productId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateProductInput'
+      responses:
+        '200':
+          description: Product updated
+
+  /products/{productId}/barcodes:
+    post:
+      summary: Add barcode mapping to product
+      parameters:
+        - name: productId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [barcode]
+              properties:
+                barcode:
+                  type: string
+                symbology:
+                  type: string
+                isPrimary:
+                  type: boolean
+      responses:
+        '201':
+          description: Barcode linked
+        '409':
+          description: Barcode already mapped to a product
+
+  /inventory:
+    get:
+      summary: List inventory balances
+      parameters:
+        - name: search
+          in: query
+          schema:
+            type: string
+        - name: categoryId
+          in: query
+          schema:
+            type: string
+        - name: lowStockOnly
+          in: query
+          schema:
+            type: boolean
+      responses:
+        '200':
+          description: Balances list
+
+  /inventory/low-stock:
+    get:
+      summary: List low-stock products for AI agent & reorder alerts
+      responses:
+        '200':
+          description: Products at or below reorder level
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/LowStockItem'
+
+  /inventory/{productId}/movements:
+    get:
+      summary: Get append-only stock movement audit trail for a product
+      parameters:
+        - name: productId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 1
+        - name: pageSize
+          in: query
+          schema:
+            type: integer
+            default: 20
+      responses:
+        '200':
+          description: Movement history
+
+  /inventory/adjustments:
+    post:
+      summary: Owner-authorized physical stock count reconciliation
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StockAdjustmentInput'
+      responses:
+        '200':
+          description: Balance adjusted and movement logged
+
+components:
+  schemas:
+    CreateProductInput:
+      type: object
+      required:
+        - name
+        - categoryId
+        - sellingPrice
+        - stockUnit
+      properties:
+        sku:
+          type: string
+        name:
+          type: string
+        brand:
+          type: string
+        categoryId:
+          type: string
+          format: uuid
+        description:
+          type: string
+        stockUnit:
+          type: string
+          enum: [PIECE, KG, GRAM, LITRE, MILLILITRE, PACKET, BOX]
+        purchasePackLabel:
+          type: string
+        unitsPerPurchasePack:
+          type: string
+        mrp:
+          type: string
+        sellingPrice:
+          type: string
+        purchaseCost:
+          type: string
+        reorderLevel:
+          type: string
+        barcode:
+          type: string
+        openingStockQuantity:
+          type: string
+
+    UpdateProductInput:
+      type: object
+      properties:
+        name:
+          type: string
+        brand:
+          type: string
+        categoryId:
+          type: string
+          format: uuid
+        sellingPrice:
+          type: string
+        mrp:
+          type: string
+        purchaseCost:
+          type: string
+        reorderLevel:
+          type: string
+        isActive:
+          type: boolean
+
+    BarcodeLookupResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        data:
+          type: object
+          properties:
+            productId:
+              type: string
+              format: uuid
+            name:
+              type: string
+            brand:
+              type: string
+            barcode:
+              type: string
+            stockUnit:
+              type: string
+            sellingPrice:
+              type: string
+            mrp:
+              type: string
+            quantityOnHand:
+              type: string
+            isActive:
+              type: boolean
+
+    LowStockItem:
+      type: object
+      properties:
+        productId:
+          type: string
+        name:
+          type: string
+        barcode:
+          type: string
+        quantityOnHand:
+          type: string
+        stockUnit:
+          type: string
+        reorderLevel:
+          type: string
+        sellingPrice:
+          type: string
+        updatedAt:
+          type: string
+          format: date-time
+
+    StockAdjustmentInput:
+      type: object
+      required:
+        - productId
+        - countedQuantity
+        - reason
+        - idempotencyKey
+      properties:
+        productId:
+          type: string
+          format: uuid
+        countedQuantity:
+          type: string
+        reason:
+          type: string
+          example: "PHYSICAL_STOCKTAKE"
+        note:
+          type: string
+        idempotencyKey:
+          type: string
+          example: "stocktake-device01-20261031-001"

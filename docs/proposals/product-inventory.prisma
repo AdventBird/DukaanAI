@@ -1,0 +1,149 @@
+// Proposal for Product & Inventory models to be merged into the canonical Prisma schema by Dev 5.
+// Complies with DukaanAI Dev 1 Engineering Specification.
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// Minimal reference store model (Dev 5 will provide canonical Store entity)
+model Store {
+  id                String             @id @default(uuid()) @db.Uuid
+  name              String
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+  categories        Category[]
+  products          Product[]
+  productBarcodes   ProductBarcode[]
+  inventoryBalances InventoryBalance[]
+  stockMovements    StockMovement[]
+
+  @@map("stores")
+}
+
+model Category {
+  id        String    @id @default(uuid()) @db.Uuid
+  storeId   String    @db.Uuid
+  name      String
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  store     Store     @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  products  Product[]
+
+  @@unique([storeId, name])
+  @@index([storeId])
+  @@map("categories")
+}
+
+enum StockUnit {
+  PIECE
+  KG
+  GRAM
+  LITRE
+  MILLILITRE
+  PACKET
+  BOX
+}
+
+model Product {
+  id                   String             @id @default(uuid()) @db.Uuid
+  storeId              String             @db.Uuid
+  sku                  String?
+  name                 String
+  brand                String?
+  categoryId           String             @db.Uuid
+  description          String?
+  stockUnit            StockUnit          @default(PIECE)
+  purchasePackLabel    String?            // e.g. "Carton (12 pcs)", "Bag (25 kg)"
+  unitsPerPurchasePack Decimal?           @db.Decimal(12, 3) // Conversion factor to stockUnit
+  mrp                  Decimal?           @db.Decimal(10, 2)
+  sellingPrice         Decimal            @db.Decimal(10, 2)
+  purchaseCost         Decimal?           @db.Decimal(10, 2) // Current benchmark cost, not historical snapshot
+  reorderLevel         Decimal            @default(0) @db.Decimal(12, 3)
+  isActive             Boolean            @default(true) // Soft archive flag
+  createdAt            DateTime           @default(now())
+  updatedAt            DateTime           @updatedAt
+
+  store                Store              @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  category             Category           @relation(fields: [categoryId], references: [id])
+  barcodes             ProductBarcode[]
+  inventoryBalance     InventoryBalance?
+  stockMovements       StockMovement[]
+
+  @@unique([storeId, sku])
+  @@index([storeId, isActive])
+  @@index([storeId, categoryId])
+  @@index([storeId, name])
+  @@map("products")
+}
+
+model ProductBarcode {
+  id         String   @id @default(uuid()) @db.Uuid
+  storeId    String   @db.Uuid
+  productId  String   @db.Uuid
+  barcode    String   // String type to strictly preserve leading zeros (e.g., "08901234567890")
+  symbology  String?  // e.g. "EAN-13", "EAN-8", "UPC-A"
+  isPrimary  Boolean  @default(false)
+  createdAt  DateTime @default(now())
+
+  store      Store    @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  product    Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@unique([storeId, barcode])
+  @@index([storeId, productId])
+  @@map("product_barcodes")
+}
+
+model InventoryBalance {
+  id             String   @id @default(uuid()) @db.Uuid
+  storeId        String   @db.Uuid
+  productId      String   @unique @db.Uuid
+  quantityOnHand Decimal  @default(0) @db.Decimal(12, 3) // Decimal for fractional quantities (e.g. 1.250 kg)
+  updatedAt      DateTime @updatedAt
+
+  store          Store    @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  product        Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@unique([storeId, productId])
+  @@index([storeId])
+  @@map("inventory_balances")
+}
+
+enum StockMovementType {
+  OPENING
+  SALE
+  PURCHASE_RECEIPT
+  MANUAL_ADJUSTMENT
+  DAMAGE
+  EXPIRY
+  CUSTOMER_RETURN
+  REVERSAL
+}
+
+model StockMovement {
+  id             String            @id @default(uuid()) @db.Uuid
+  storeId        String            @db.Uuid
+  productId      String            @db.Uuid
+  movementType   StockMovementType
+  quantityDelta  Decimal           @db.Decimal(12, 3) // Signed: Positive = added, Negative = deducted
+  unit           String            // Snapshot of unit at time of movement
+  reason         String?           // Mandatory for MANUAL_ADJUSTMENT, DAMAGE, EXPIRY
+  referenceType  String?           // e.g., "SALE", "PURCHASE_RECEIPT", "STOCKTAKE"
+  referenceId    String?           // ID of sale, goods receipt, or audit session
+  idempotencyKey String?           @unique // Prevents duplicate application on retry
+  actorType      String?           // "OWNER", "STAFF", "SYSTEM", "AI"
+  actorId        String?
+  createdAt      DateTime          @default(now()) // Strictly append-only; no updatedAt
+
+  store          Store             @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  product        Product           @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@index([storeId, productId, createdAt])
+  @@index([storeId, movementType])
+  @@index([idempotencyKey])
+  @@map("stock_movements")
+}
