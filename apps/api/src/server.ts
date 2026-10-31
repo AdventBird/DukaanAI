@@ -10,6 +10,10 @@ import { createProductRouter } from './modules/products/product.routes.js';
 import { createInventoryRouter } from './modules/inventory/inventory.routes.js';
 import { InventoryService } from './modules/inventory/inventory.service.js';
 
+// Domain modules (Dev 2: Sales, POS & Analytics)
+import { createSalesRouter } from './modules/sales/sales.routes.js';
+import { SalesService } from './modules/sales/sales.service.js';
+
 // Domain modules (Dev 3: Suppliers & Procurement)
 import { supplierRouter, supplierProductRouter } from './modules/suppliers/supplier.routes.js';
 import { quoteRouter, purchaseOrderRouter, goodsReceiptRouter } from './modules/procurement/procurement.routes.js';
@@ -18,6 +22,7 @@ import { procurementService } from './modules/procurement/procurement.service.js
 const app = express();
 export const prisma = new PrismaClient();
 export const inventoryService = new InventoryService(prisma);
+export const salesService = new SalesService(prisma);
 const port = Number(process.env.PORT ?? 3001);
 const webOrigin = process.env.WEB_ORIGIN ?? 'http://localhost:5173';
 
@@ -55,6 +60,7 @@ app.get('/api/health', async (_req, res) => {
 // Domain routes
 app.use('/api', createProductRouter(prisma));
 app.use('/api', createInventoryRouter(prisma));
+app.use('/api', createSalesRouter(prisma, salesService));
 app.use('/api/suppliers', supplierRouter);
 app.use('/api/supplier-products', supplierProductRouter);
 app.use('/api', quoteRouter);
@@ -75,14 +81,21 @@ app.get('/api/dashboard/summary', async (req, res, next) => {
     // Database service offline or pending Docker container launch
   }
   const proc = await procurementService.getAnalyticsSummary(req.auth.storeId);
+  const salesMetrics = await salesService.getDashboardSummary(req.auth.storeId, period as 'today' | '7d' | '30d').catch(() => ({
+    sales: '0.00',
+    transactions: 0,
+    averageBasket: '0.00',
+    grossProfit: '0.00',
+  }));
+
   res.json(successEnvelope({
     period,
     storeId: req.auth.storeId,
     dataAvailable: true,
-    sales: null,
-    transactions: null,
-    averageBasket: null,
-    grossProfit: null,
+    sales: salesMetrics.sales,
+    transactions: salesMetrics.transactions,
+    averageBasket: salesMetrics.averageBasket,
+    grossProfit: salesMetrics.grossProfit,
     lowStockCount: health.lowStockCount,
     totalProducts: health.totalProducts,
     openPurchaseOrders: proc.openPurchaseOrders,
@@ -103,14 +116,41 @@ app.get('/api/dashboard/activity', async (req, res, next) => {
   }
 });
 
-// These aggregation adapters return explicit missing-data states until their domain owners integrate.
-app.get('/api/analytics/sales', (req, res) => {
+app.get('/api/analytics/sales', async (req, res, next) => {
   if (!req.auth) return res.status(401).json(errorEnvelope('UNAUTHENTICATED', 'A valid session is required.', res.locals.requestId));
-  res.json(successEnvelope({ dataAvailable: false, unavailableReason: 'SALES_MODULE_NOT_INTEGRATED', interval: req.query.interval ?? 'day', points: null }, res.locals.requestId));
+  try {
+    const days = Math.min(30, Math.max(1, Number(req.query.days) || 7));
+    const analytics = await salesService.getSalesAnalytics(req.auth.storeId, days);
+    res.json(successEnvelope({
+      dataAvailable: true,
+      unavailableReason: null,
+      interval: req.query.interval ?? 'day',
+      points: analytics.points,
+      summary: {
+        totalRevenue: analytics.totalRevenue,
+        totalTransactions: analytics.totalTransactions,
+        averageBasket: analytics.averageBasket,
+        grossProfit: analytics.grossProfit,
+        grossMarginPercent: analytics.grossMarginPercent,
+        cashTotal: analytics.cashTotal,
+        upiTotal: analytics.upiTotal,
+        creditTotal: analytics.creditTotal,
+      },
+    }, res.locals.requestId));
+  } catch (error) { next(error); }
 });
-app.get('/api/analytics/products/top-selling', (req, res) => {
+
+app.get('/api/analytics/products/top-selling', async (req, res, next) => {
   if (!req.auth) return res.status(401).json(errorEnvelope('UNAUTHENTICATED', 'A valid session is required.', res.locals.requestId));
-  res.json(successEnvelope({ dataAvailable: false, unavailableReason: 'SALES_MODULE_NOT_INTEGRATED', items: null }, res.locals.requestId));
+  try {
+    const limit = Math.min(20, Math.max(1, Number(req.query.limit) || 5));
+    const items = await salesService.getTopSellingProducts(req.auth.storeId, limit);
+    res.json(successEnvelope({
+      dataAvailable: true,
+      unavailableReason: null,
+      items,
+    }, res.locals.requestId));
+  } catch (error) { next(error); }
 });
 app.get('/api/analytics/inventory/health', async (req, res, next) => {
   if (!req.auth) return res.status(401).json(errorEnvelope('UNAUTHENTICATED', 'A valid session is required.', res.locals.requestId));
@@ -195,15 +235,8 @@ app.get('/api/finance/summary', async (req, res, next) => {
   const to = typeof req.query.to === 'string' ? parseBoundary(req.query.to, true) : new Date();
   if (!Number.isFinite(from.getTime()) || !Number.isFinite(to.getTime()) || from > to) return res.status(400).json(errorEnvelope('VALIDATION_ERROR', 'A valid date range is required.', res.locals.requestId));
   try {
-    const aggregate = await prisma.expense.aggregate({ where: { storeId: auth.storeId, occurredAt: { gte: from, lte: to } }, _sum: { amount: true }, _count: { _all: true } });
-    res.json(successEnvelope({
-      from: from.toISOString(), to: to.toISOString(), currency: 'INR',
-      revenue: null, costOfGoodsSold: null, grossProfit: null,
-      recordedExpenses: aggregate._sum.amount?.toFixed(2) ?? '0.00', expenseCount: aggregate._count._all,
-      estimatedOperatingResult: null,
-      dataAvailable: false,
-      unavailable: ['sales', 'cost_of_goods_sold'],
-    }, res.locals.requestId));
+    const summary = await salesService.getFinanceSummary(auth.storeId, from, to);
+    res.json(successEnvelope(summary, res.locals.requestId));
   } catch (error) { next(error); }
 });
 

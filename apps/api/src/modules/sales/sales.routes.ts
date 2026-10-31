@@ -1,104 +1,71 @@
-import { Router, Request, Response, NextFunction } from 'express';
+import { Router, type Request, type Response, type NextFunction } from 'express';
 import { PrismaClient } from '@prisma/client';
-import {
-  createSaleSchema,
-  successEnvelope,
-  errorEnvelope,
-  PaymentMethod,
-} from '@dukaanai/shared';
+import { createSaleInputSchema, errorEnvelope, successEnvelope } from '@dukaanai/shared';
 import { SalesService } from './sales.service.js';
-import type { InventoryService } from '../inventory/inventory.service.js';
 
-export function createSalesRouter(prisma: PrismaClient, inventoryService?: InventoryService): Router {
+export function createSalesRouter(prisma: PrismaClient, salesService: SalesService) {
   const router = Router();
-  const service = new SalesService(prisma, inventoryService);
 
-  // Require store session
-  router.use((req: Request, res: Response, next: NextFunction) => {
-    if (!req.auth || !req.auth.storeId) {
-      return res.status(401).json(errorEnvelope('UNAUTHENTICATED', 'A valid store session is required.', res.locals.requestId));
+  // GET /api/sales - List sales
+  router.get('/sales', async (req: Request, res: Response, next: NextFunction) => {
+    if (!req.auth) return res.status(401).json(errorEnvelope('UNAUTHENTICATED', 'A valid session is required.', res.locals.requestId));
+    const storeId = req.auth.storeId;
+    const page = Number(req.query.page) || 1;
+    const pageSize = Number(req.query.pageSize) || 20;
+    const paymentMethod = typeof req.query.paymentMethod === 'string' ? req.query.paymentMethod : undefined;
+    const search = typeof req.query.search === 'string' ? req.query.search : undefined;
+
+    try {
+      const result = await salesService.listSales(storeId, { page, pageSize, paymentMethod, search });
+      res.json(successEnvelope(result.items, res.locals.requestId));
+    } catch (error) {
+      next(error);
     }
-    next();
   });
 
-  // Create Sale / Checkout
+  // GET /api/sales/:id - Retrieve sale details
+  router.get('/sales/:id', async (req: Request, res: Response, next: NextFunction) => {
+    if (!req.auth) return res.status(401).json(errorEnvelope('UNAUTHENTICATED', 'A valid session is required.', res.locals.requestId));
+    const storeId = req.auth.storeId;
+    const id = Array.isArray(req.params.id) ? req.params.id[0] : String(req.params.id);
+
+    try {
+      const sale = await salesService.getSaleById(storeId, id);
+      if (!sale) {
+        return res.status(404).json(errorEnvelope('NOT_FOUND', 'Sale transaction not found.', res.locals.requestId));
+      }
+      res.json(successEnvelope(sale, res.locals.requestId));
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // POST /api/sales - Record a POS sale
   router.post('/sales', async (req: Request, res: Response, next: NextFunction) => {
-    const parsed = createSaleSchema.safeParse(req.body);
+    if (!req.auth) return res.status(401).json(errorEnvelope('UNAUTHENTICATED', 'A valid session is required.', res.locals.requestId));
+    const storeId = req.auth.storeId;
+    const actorId = req.auth.userId;
+
+    const parsed = createSaleInputSchema.safeParse(req.body);
     if (!parsed.success) {
       return res.status(400).json(
         errorEnvelope(
           'VALIDATION_ERROR',
-          parsed.error.issues[0]?.message || 'Invalid sale checkout payload.',
+          'Invalid sale transaction details.',
           res.locals.requestId,
-          parsed.error.issues
+          parsed.error.issues.map(({ path, message }) => ({ path, message }))
         )
       );
     }
 
     try {
-      const sale = await service.createSale(req.auth!.storeId, parsed.data, req.auth!.userId);
+      const sale = await salesService.createSale(storeId, actorId, parsed.data);
       res.status(201).json(successEnvelope(sale, res.locals.requestId));
-    } catch (err: any) {
-      if (err.code === 'PRICE_CHANGED') {
-        return res.status(409).json(
-          errorEnvelope('PRICE_CHANGED', err.message, res.locals.requestId, err.details)
-        );
+    } catch (error: any) {
+      if (error?.message?.includes('Product not found')) {
+        return res.status(404).json(errorEnvelope('NOT_FOUND', error.message, res.locals.requestId));
       }
-      if (err.code === 'INSUFFICIENT_STOCK') {
-        return res.status(409).json(
-          errorEnvelope('INSUFFICIENT_STOCK', err.message, res.locals.requestId, err.details)
-        );
-      }
-      if (err.code === 'PRODUCT_NOT_FOUND') {
-        return res.status(404).json(
-          errorEnvelope('PRODUCT_NOT_FOUND', err.message, res.locals.requestId, err.details)
-        );
-      }
-      if (err.status && err.status < 500) {
-        return res.status(err.status).json(
-          errorEnvelope(err.code || 'VALIDATION_ERROR', err.message, res.locals.requestId, err.details)
-        );
-      }
-      next(err);
-    }
-  });
-
-  // List Sales History
-  router.get('/sales', async (req: Request, res: Response, next: NextFunction) => {
-    try {
-      const { page, pageSize, search, paymentMethod, from, to } = req.query;
-      const result = await service.listSales(req.auth!.storeId, {
-        page: page ? Number(page) : 1,
-        pageSize: pageSize ? Number(pageSize) : 20,
-        search: typeof search === 'string' ? search : undefined,
-        paymentMethod: typeof paymentMethod === 'string' ? (paymentMethod as PaymentMethod) : undefined,
-        from: typeof from === 'string' ? from : undefined,
-        to: typeof to === 'string' ? to : undefined,
-      });
-
-      res.json({
-        data: result.sales,
-        meta: {
-          requestId: res.locals.requestId,
-          pagination: result.pagination,
-        },
-      });
-    } catch (err) {
-      next(err);
-    }
-  });
-
-  // Get Sale Details & Receipt Snapshot
-  router.get('/sales/:saleId', async (req: Request, res: Response, next: NextFunction) => {
-    try {
-      const saleId = String(req.params.saleId);
-      const sale = await service.getSaleById(req.auth!.storeId, saleId);
-      res.json(successEnvelope(sale, res.locals.requestId));
-    } catch (err: any) {
-      if (err.status === 404 || err.code === 'NOT_FOUND') {
-        return res.status(404).json(errorEnvelope('NOT_FOUND', err.message, res.locals.requestId));
-      }
-      next(err);
+      next(error);
     }
   });
 

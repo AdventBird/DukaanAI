@@ -1,483 +1,563 @@
-import { Prisma, PrismaClient, PaymentMethod, PaymentStatus, SaleStatus } from '@prisma/client';
 import { randomUUID } from 'node:crypto';
-import type {
-  CreateSaleInput,
-  SaleDto,
-  SaleSummaryDto,
-  SalesListFilter,
-  SaleItemDto,
-  PaymentDto,
-} from '@dukaanai/shared';
-import type { InventoryService } from '../inventory/inventory.service.js';
+import { PrismaClient, Prisma } from '@prisma/client';
+import type { CreateSaleInput, SalesAnalyticsSummary, TopSellingProductResult } from '@dukaanai/shared';
 
 export class SalesService {
-  constructor(
-    private readonly prisma: PrismaClient,
-    private readonly inventoryService?: InventoryService
-  ) {}
+  constructor(private readonly prisma: PrismaClient) {}
 
-  /**
-   * Helper to format a receipt number: REC-YYYYMMDD-XXXX
-   */
-  private generateReceiptNumber(): string {
-    const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(new Date()).replace(/-/g, '');
-    const rand = Math.floor(1000 + Math.random() * 9000);
-    return `REC-${today}-${rand}`;
-  }
-
-  /**
-   * Process and persist a new sale atomically:
-   * 1. Idempotency guard: return original sale if key already processed.
-   * 2. Load and validate active products and stale prices.
-   * 3. Compute totals using Decimal-safe math.
-   * 4. Validate payment rules (CASH, UPI, CREDIT).
-   * 5. Atomically create Sale, SaleItem snapshots, Payment, and deduct stock via InventoryService.
-   */
-  async createSale(storeId: string, input: CreateSaleInput, userId = 'cashier'): Promise<SaleDto> {
-    const { idempotencyKey, items, payment, customerLabel } = input;
-
-    // 1. Check idempotency outside transaction first for fast path
-    const existingSale = await this.prisma.sale.findUnique({
-      where: { idempotencyKey },
-      include: {
-        items: true,
-        payments: true,
-      },
-    });
-
-    if (existingSale) {
-      if (existingSale.storeId !== storeId) {
-        const err: any = new Error('Sale belongs to another store context');
-        err.status = 403;
-        err.code = 'FORBIDDEN';
-        throw err;
-      }
-      return this.mapToSaleDto(existingSale);
-    }
-
-    // 2. Fetch products and primary barcodes for validation & snapshots
-    const productIds = Array.from(new Set(items.map((it) => it.productId)));
-    const products = await this.prisma.product.findMany({
-      where: {
-        id: { in: productIds },
-        storeId,
-        isActive: true,
-      },
-      include: {
-        barcodes: {
-          orderBy: { isPrimary: 'desc' },
-          take: 1,
-        },
-        inventoryBalance: true,
-      },
-    });
-
-    const productMap = new Map(products.map((p) => [p.id, p]));
-
-    // Check all products exist and are active
-    for (const item of items) {
-      const prod = productMap.get(item.productId);
-      if (!prod) {
-        const err: any = new Error(`Product not found or inactive: ${item.productId}`);
-        err.status = 404;
-        err.code = 'PRODUCT_NOT_FOUND';
-        err.details = { productId: item.productId };
-        throw err;
-      }
-
-      // Stale price guard
-      const expectedPriceDec = new Prisma.Decimal(item.expectedSellingPrice);
-      if (!prod.sellingPrice.equals(expectedPriceDec)) {
-        const err: any = new Error(
-          `Price for "${prod.name}" has changed. Expected ₹${expectedPriceDec.toFixed(2)}, current is ₹${prod.sellingPrice.toFixed(2)}.`
-        );
-        err.status = 409;
-        err.code = 'PRICE_CHANGED';
-        err.details = {
-          productId: prod.id,
-          productName: prod.name,
-          expectedSellingPrice: expectedPriceDec.toFixed(2),
-          currentSellingPrice: prod.sellingPrice.toFixed(2),
-        };
-        throw err;
-      }
-    }
-
-    // Aggregate quantities by product for stock checking & deduction
-    const aggregatedQuantities = new Map<string, Prisma.Decimal>();
-    for (const item of items) {
-      const qtyDec = new Prisma.Decimal(item.quantity);
-      const currentAgg = aggregatedQuantities.get(item.productId) ?? new Prisma.Decimal(0);
-      aggregatedQuantities.set(item.productId, currentAgg.plus(qtyDec));
-    }
-
-    // Validate stock availability
-    for (const [pId, totalNeeded] of aggregatedQuantities.entries()) {
-      const prod = productMap.get(pId)!;
-      const currentStock = prod.inventoryBalance?.quantityOnHand ?? new Prisma.Decimal(0);
-      if (currentStock.lessThan(totalNeeded)) {
-        const err: any = new Error(
-          `Insufficient stock for "${prod.name}". Available: ${currentStock.toString()}, Requested: ${totalNeeded.toString()}`
-        );
-        err.status = 409;
-        err.code = 'INSUFFICIENT_STOCK';
-        err.details = {
-          productId: prod.id,
-          productName: prod.name,
-          availableQuantity: currentStock.toString(),
-          requestedQuantity: totalNeeded.toString(),
-        };
-        throw err;
-      }
-    }
-
-    // Calculate line totals and subtotal with Decimal precision
-    let subtotalDec = new Prisma.Decimal(0);
-    const lineCalculations = items.map((line) => {
-      const prod = productMap.get(line.productId)!;
-      const qtyDec = new Prisma.Decimal(line.quantity);
-      const unitPriceDec = prod.sellingPrice;
-      const lineTotalDec = qtyDec.times(unitPriceDec);
-      subtotalDec = subtotalDec.plus(lineTotalDec);
-
-      return {
-        productId: prod.id,
-        productNameSnapshot: prod.name,
-        barcodeSnapshot: prod.barcodes[0]?.barcode ?? null,
-        stockUnitSnapshot: prod.stockUnit,
-        quantity: qtyDec,
-        unitPriceSnapshot: unitPriceDec,
-        unitCostSnapshot: prod.purchaseCost,
-        lineTotal: lineTotalDec,
-      };
-    });
-
-    const totalDec = subtotalDec; // MVP has 0 discount unless specified
-
-    // Payment validation
-    let amountPaidDec = new Prisma.Decimal(0);
-    let changeDueDec = new Prisma.Decimal(0);
-    let balanceDueDec = new Prisma.Decimal(0);
-    let paymentStatus: PaymentStatus = PaymentStatus.COMPLETED;
-    const paymentMethod = payment.method as PaymentMethod;
-
-    if (paymentMethod === PaymentMethod.CASH) {
-      if (!payment.amountTendered) {
-        const err: any = new Error('Amount tendered is required for cash payments');
-        err.status = 400;
-        err.code = 'VALIDATION_ERROR';
-        throw err;
-      }
-      const tenderedDec = new Prisma.Decimal(payment.amountTendered);
-      if (tenderedDec.lessThan(totalDec)) {
-        const err: any = new Error(
-          `Amount tendered (₹${tenderedDec.toFixed(2)}) is less than total amount (₹${totalDec.toFixed(2)})`
-        );
-        err.status = 400;
-        err.code = 'INSUFFICIENT_TENDERED_AMOUNT';
-        throw err;
-      }
-      amountPaidDec = totalDec;
-      changeDueDec = tenderedDec.minus(totalDec);
-      balanceDueDec = new Prisma.Decimal(0);
-      paymentStatus = PaymentStatus.COMPLETED;
-    } else if (paymentMethod === PaymentMethod.UPI) {
-      amountPaidDec = totalDec;
-      changeDueDec = new Prisma.Decimal(0);
-      balanceDueDec = new Prisma.Decimal(0);
-      paymentStatus = PaymentStatus.COMPLETED;
-    } else if (paymentMethod === PaymentMethod.CREDIT) {
-      if (!customerLabel || customerLabel.trim().length === 0) {
-        const err: any = new Error('Customer label/name is required for credit (Udhar) sales');
-        err.status = 400;
-        err.code = 'VALIDATION_ERROR';
-        throw err;
-      }
-      amountPaidDec = new Prisma.Decimal(0);
-      changeDueDec = new Prisma.Decimal(0);
-      balanceDueDec = totalDec;
-      paymentStatus = PaymentStatus.PENDING;
-    }
-
-    // 5. Execute atomic transaction
-    const saleResult = await this.prisma.$transaction(async (tx) => {
-      // Re-check idempotency inside transaction for strict race condition safety
-      const doubleCheck = await tx.sale.findUnique({
-        where: { idempotencyKey },
-        include: { items: true, payments: true },
-      });
-      if (doubleCheck) {
-        return doubleCheck;
-      }
-
-      const receiptNumber = this.generateReceiptNumber();
-
-      // Create Sale
-      const createdSale = await tx.sale.create({
-        data: {
-          storeId,
-          receiptNumber,
-          status: SaleStatus.COMPLETED,
-          subtotal: subtotalDec,
-          discountTotal: new Prisma.Decimal(0),
-          total: totalDec,
-          paymentStatus,
-          paymentMethod,
-          amountPaid: amountPaidDec,
-          changeDue: changeDueDec,
-          balanceDue: balanceDueDec,
-          customerLabel: customerLabel ? customerLabel.trim() : null,
-          idempotencyKey,
-          createdBy: userId,
-          completedAt: new Date(),
-        },
-      });
-
-      // Create SaleItems
-      for (const line of lineCalculations) {
-        await tx.saleItem.create({
-          data: {
-            saleId: createdSale.id,
-            productId: line.productId,
-            productNameSnapshot: line.productNameSnapshot,
-            barcodeSnapshot: line.barcodeSnapshot,
-            stockUnitSnapshot: line.stockUnitSnapshot,
-            quantity: line.quantity,
-            unitPriceSnapshot: line.unitPriceSnapshot,
-            unitCostSnapshot: line.unitCostSnapshot,
-            lineTotal: line.lineTotal,
-          },
-        });
-      }
-
-      // Create Payment
-      await tx.payment.create({
-        data: {
-          storeId,
-          saleId: createdSale.id,
-          method: paymentMethod,
-          amount: paymentMethod === PaymentMethod.CASH && payment.amountTendered
-            ? new Prisma.Decimal(payment.amountTendered)
-            : totalDec,
-          status: paymentStatus,
-          reference: payment.reference ? payment.reference.trim() : null,
-          recordedBy: userId,
-        },
-      });
-
-      // Deduct inventory for each aggregated product via InventoryService
-      if (this.inventoryService) {
-        for (const [pId, qty] of aggregatedQuantities.entries()) {
-          await this.inventoryService.deductForSale(tx, {
-            storeId,
-            productId: pId,
-            quantity: qty.toString(),
-            saleId: createdSale.id,
-            idempotencyKey: `${idempotencyKey}:${pId}`,
-            actorId: userId,
-          });
-        }
-      }
-
-      // Record outbox event and audit log
-      const eventId = randomUUID();
-      const eventPayload = {
-        eventId,
-        eventType: 'sale.completed',
-        payloadVersion: 1,
-        storeId,
-        entityType: 'sale',
-        entityId: createdSale.id,
-        occurredAt: new Date().toISOString(),
-        actor: { type: 'USER', id: userId },
-        payload: {
-          receiptNumber,
-          total: totalDec.toFixed(2),
-          paymentMethod,
-          itemCount: items.length,
-        },
-      };
-
-      await tx.outboxEvent.create({
-        data: {
-          id: eventId,
-          storeId,
-          eventType: 'sale.completed',
-          payloadVersion: 1,
-          entityType: 'sale',
-          entityId: createdSale.id,
-          payload: eventPayload,
-        },
-      });
-
-      await tx.auditLog.create({
-        data: {
-          storeId,
-          actorId: userId,
-          action: 'sale.completed',
-          entityType: 'sale',
-          entityId: createdSale.id,
-          metadata: {
-            receiptNumber,
-            total: totalDec.toFixed(2),
-            paymentMethod,
-          },
-        },
-      });
-
-      // Reload created sale with items and payments
-      return await tx.sale.findUniqueOrThrow({
-        where: { id: createdSale.id },
-        include: { items: true, payments: true },
-      });
-    });
-
-    return this.mapToSaleDto(saleResult);
-  }
-
-  /**
-   * Retrieve a sale by ID with immutable item snapshots and payments
-   */
-  async getSaleById(storeId: string, saleId: string): Promise<SaleDto> {
-    const sale = await this.prisma.sale.findFirst({
-      where: { id: saleId, storeId },
-      include: {
-        items: true,
-        payments: true,
-      },
-    });
-
-    if (!sale) {
-      const err: any = new Error(`Sale not found: ${saleId}`);
-      err.status = 404;
-      err.code = 'NOT_FOUND';
-      throw err;
-    }
-
-    return this.mapToSaleDto(sale);
-  }
-
-  /**
-   * List paginated sales with optional filters
-   */
   async listSales(
     storeId: string,
-    filter: SalesListFilter = {}
-  ): Promise<{ sales: SaleSummaryDto[]; pagination: { page: number; pageSize: number; total: number; totalPages: number } }> {
-    const page = Math.max(1, filter.page ?? 1);
-    const pageSize = Math.min(100, Math.max(1, filter.pageSize ?? 20));
+    params: {
+      page?: number;
+      pageSize?: number;
+      paymentMethod?: string;
+      search?: string;
+      from?: Date;
+      to?: Date;
+    } = {}
+  ) {
+    const page = Math.max(1, params.page || 1);
+    const pageSize = Math.min(100, Math.max(1, params.pageSize || 20));
     const skip = (page - 1) * pageSize;
 
     const where: Prisma.SaleWhereInput = {
       storeId,
+      ...(params.paymentMethod ? { paymentMethod: params.paymentMethod as any } : {}),
+      ...(params.search
+        ? {
+            OR: [
+              { receiptNumber: { contains: params.search, mode: 'insensitive' } },
+              { customerLabel: { contains: params.search, mode: 'insensitive' } },
+            ],
+          }
+        : {}),
+      ...(params.from || params.to
+        ? {
+            createdAt: {
+              ...(params.from ? { gte: params.from } : {}),
+              ...(params.to ? { lte: params.to } : {}),
+            },
+          }
+        : {}),
     };
 
-    if (filter.paymentMethod) {
-      where.paymentMethod = filter.paymentMethod;
-    }
-
-    if (filter.search) {
-      const s = filter.search.trim();
-      where.OR = [
-        { receiptNumber: { contains: s, mode: 'insensitive' } },
-        { customerLabel: { contains: s, mode: 'insensitive' } },
-      ];
-    }
-
-    if (filter.from || filter.to) {
-      where.createdAt = {};
-      if (filter.from) {
-        where.createdAt.gte = new Date(filter.from);
-      }
-      if (filter.to) {
-        where.createdAt.lte = new Date(filter.to);
-      }
-    }
-
-    const [sales, total] = await Promise.all([
+    const [sales, total] = await this.prisma.$transaction([
       this.prisma.sale.findMany({
         where,
+        include: {
+          items: true,
+          payments: true,
+        },
         orderBy: { createdAt: 'desc' },
         skip,
         take: pageSize,
-        include: {
-          _count: {
-            select: { items: true },
-          },
-        },
       }),
       this.prisma.sale.count({ where }),
     ]);
 
-    const mapped: SaleSummaryDto[] = sales.map((s) => ({
-      id: s.id,
-      receiptNumber: s.receiptNumber,
-      status: s.status,
-      total: s.total.toFixed(2),
-      paymentMethod: s.paymentMethod,
-      paymentStatus: s.paymentStatus,
-      amountPaid: s.amountPaid.toFixed(2),
-      balanceDue: s.balanceDue.toFixed(2),
-      customerLabel: s.customerLabel,
-      itemCount: s._count.items,
-      createdAt: s.createdAt.toISOString(),
-    }));
-
     return {
-      sales: mapped,
-      pagination: {
-        page,
-        pageSize,
-        total,
-        totalPages: Math.ceil(total / pageSize) || 1,
-      },
+      items: sales.map((sale) => ({
+        id: sale.id,
+        receiptNumber: sale.receiptNumber,
+        status: sale.status,
+        subtotal: sale.subtotal.toFixed(2),
+        discountTotal: sale.discountTotal.toFixed(2),
+        total: sale.total.toFixed(2),
+        paymentMethod: sale.paymentMethod,
+        paymentStatus: sale.paymentStatus,
+        amountPaid: sale.amountPaid.toFixed(2),
+        changeDue: sale.changeDue.toFixed(2),
+        balanceDue: sale.balanceDue.toFixed(2),
+        customerLabel: sale.customerLabel,
+        itemCount: sale.items.length,
+        items: sale.items.map((item) => ({
+          id: item.id,
+          productId: item.productId,
+          productName: item.productNameSnapshot,
+          barcode: item.barcodeSnapshot,
+          stockUnit: item.stockUnitSnapshot,
+          quantity: item.quantity.toString(),
+          unitPrice: item.unitPriceSnapshot.toFixed(2),
+          lineTotal: item.lineTotal.toFixed(2),
+        })),
+        createdAt: sale.createdAt.toISOString(),
+      })),
+      total,
+      page,
+      pageSize,
     };
   }
 
-  /**
-   * Helper to map Prisma Sale entity to SaleDto with strings for decimal representations
-   */
-  private mapToSaleDto(sale: any): SaleDto {
+  async getSaleById(storeId: string, idOrReceipt: string) {
+    const sale = await this.prisma.sale.findFirst({
+      where: {
+        storeId,
+        OR: [{ id: idOrReceipt }, { receiptNumber: idOrReceipt }],
+      },
+      include: {
+        items: true,
+        payments: true,
+      },
+    });
+
+    if (!sale) return null;
+
     return {
       id: sale.id,
-      storeId: sale.storeId,
       receiptNumber: sale.receiptNumber,
       status: sale.status,
       subtotal: sale.subtotal.toFixed(2),
       discountTotal: sale.discountTotal.toFixed(2),
       total: sale.total.toFixed(2),
-      paymentStatus: sale.paymentStatus,
       paymentMethod: sale.paymentMethod,
+      paymentStatus: sale.paymentStatus,
       amountPaid: sale.amountPaid.toFixed(2),
       changeDue: sale.changeDue.toFixed(2),
       balanceDue: sale.balanceDue.toFixed(2),
       customerLabel: sale.customerLabel,
-      idempotencyKey: sale.idempotencyKey,
-      createdBy: sale.createdBy,
-      createdAt: sale.createdAt.toISOString(),
-      completedAt: sale.completedAt ? sale.completedAt.toISOString() : null,
-      items: (sale.items ?? []).map((it: any): SaleItemDto => ({
-        id: it.id,
-        saleId: it.saleId,
-        productId: it.productId,
-        productNameSnapshot: it.productNameSnapshot,
-        barcodeSnapshot: it.barcodeSnapshot,
-        stockUnitSnapshot: it.stockUnitSnapshot,
-        quantity: it.quantity.toString(),
-        unitPriceSnapshot: it.unitPriceSnapshot.toFixed(2),
-        unitCostSnapshot: it.unitCostSnapshot ? it.unitCostSnapshot.toFixed(2) : null,
-        lineTotal: it.lineTotal.toFixed(2),
+      itemCount: sale.items.length,
+      items: sale.items.map((item) => ({
+        id: item.id,
+        productId: item.productId,
+        productName: item.productNameSnapshot,
+        barcode: item.barcodeSnapshot,
+        stockUnit: item.stockUnitSnapshot,
+        quantity: item.quantity.toString(),
+        unitPrice: item.unitPriceSnapshot.toFixed(2),
+        lineTotal: item.lineTotal.toFixed(2),
       })),
-      payments: (sale.payments ?? []).map((p: any): PaymentDto => ({
+      payments: sale.payments.map((p) => ({
         id: p.id,
-        saleId: p.saleId,
         method: p.method,
         amount: p.amount.toFixed(2),
         status: p.status,
         reference: p.reference,
         occurredAt: p.occurredAt.toISOString(),
-        recordedBy: p.recordedBy,
       })),
+      createdAt: sale.createdAt.toISOString(),
+    };
+  }
+
+  async createSale(storeId: string, actorId: string, input: CreateSaleInput) {
+    const idempotencyKey = input.idempotencyKey || `sale-${randomUUID()}`;
+
+    // Check idempotency
+    const existing = await this.prisma.sale.findUnique({
+      where: { idempotencyKey },
+      include: { items: true, payments: true },
+    });
+    if (existing) {
+      return this.getSaleById(storeId, existing.id);
+    }
+
+    // Load products
+    const productIds = input.items.map((item) => item.productId);
+    const products = await this.prisma.product.findMany({
+      where: { id: { in: productIds }, storeId },
+      include: { barcodes: true },
+    });
+    const productMap = new Map(products.map((p) => [p.id, p]));
+
+    for (const item of input.items) {
+      if (!productMap.has(item.productId)) {
+        throw new Error(`Product not found: ${item.productId}`);
+      }
+    }
+
+    // Build line items
+    let subtotal = new Prisma.Decimal(0);
+    const lineItemData: Array<{
+      productId: string;
+      productNameSnapshot: string;
+      barcodeSnapshot: string | null;
+      stockUnitSnapshot: string;
+      quantity: Prisma.Decimal;
+      unitPriceSnapshot: Prisma.Decimal;
+      unitCostSnapshot: Prisma.Decimal | null;
+      lineTotal: Prisma.Decimal;
+    }> = [];
+
+    for (const item of input.items) {
+      const product = productMap.get(item.productId)!;
+      const qty = new Prisma.Decimal(item.quantity);
+      const unitPrice = item.unitPrice ? new Prisma.Decimal(item.unitPrice) : product.sellingPrice;
+      const primaryBarcode = product.barcodes.find((b) => b.isPrimary)?.barcode || product.barcodes[0]?.barcode || null;
+      const lineTotal = unitPrice.mul(qty);
+
+      subtotal = subtotal.add(lineTotal);
+      lineItemData.push({
+        productId: product.id,
+        productNameSnapshot: product.name,
+        barcodeSnapshot: primaryBarcode,
+        stockUnitSnapshot: product.stockUnit,
+        quantity: qty,
+        unitPriceSnapshot: unitPrice,
+        unitCostSnapshot: product.purchaseCost,
+        lineTotal,
+      });
+    }
+
+    const discountTotal = new Prisma.Decimal(0);
+    const total = subtotal.sub(discountTotal);
+
+    const amountPaid = input.amountPaid ? new Prisma.Decimal(input.amountPaid) : total;
+    const changeDue = amountPaid.gt(total) ? amountPaid.sub(total) : new Prisma.Decimal(0);
+    const balanceDue = total.gt(amountPaid) ? total.sub(amountPaid) : new Prisma.Decimal(0);
+
+    const paymentStatus = balanceDue.isZero() ? 'COMPLETED' : 'PENDING';
+
+    // Generate readable receipt number
+    const dateStr = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(new Date()).replace(/-/g, '');
+    const countToday = await this.prisma.sale.count({
+      where: {
+        storeId,
+        createdAt: {
+          gte: new Date(new Date().setHours(0, 0, 0, 0)),
+        },
+      },
+    });
+    const seq = String(countToday + 1).padStart(4, '0');
+    const receiptNumber = `BILL-${dateStr}-${seq}`;
+
+    // Execute transaction: create sale, create sale items, deduct stock, log movement, record payment
+    const sale = await this.prisma.$transaction(async (tx) => {
+      const createdSale = await tx.sale.create({
+        data: {
+          storeId,
+          receiptNumber,
+          status: 'COMPLETED',
+          subtotal,
+          discountTotal,
+          total,
+          paymentStatus: paymentStatus as any,
+          paymentMethod: input.paymentMethod as any,
+          amountPaid,
+          changeDue,
+          balanceDue,
+          customerLabel: input.customerLabel || null,
+          idempotencyKey,
+          createdBy: actorId,
+          items: {
+            create: lineItemData,
+          },
+          payments: {
+            create: {
+              storeId,
+              method: input.paymentMethod as any,
+              amount: amountPaid,
+              status: paymentStatus as any,
+              reference: input.paymentMethod === 'UPI' ? `UPI-${dateStr}-${seq}` : null,
+              recordedBy: actorId,
+            },
+          },
+        },
+        include: { items: true, payments: true },
+      });
+
+      // Stock deduction & movement tracking
+      for (const item of lineItemData) {
+        await tx.inventoryBalance.upsert({
+          where: { storeId_productId: { storeId, productId: item.productId } },
+          create: {
+            storeId,
+            productId: item.productId,
+            quantityOnHand: item.quantity.negated(),
+          },
+          update: {
+            quantityOnHand: { decrement: item.quantity },
+          },
+        });
+
+        await tx.stockMovement.create({
+          data: {
+            storeId,
+            productId: item.productId,
+            movementType: 'SALE',
+            quantityDelta: item.quantity.negated(),
+            unit: item.stockUnitSnapshot,
+            referenceType: 'SALE',
+            referenceId: createdSale.id,
+            actorType: 'STAFF',
+            actorId,
+            idempotencyKey: `stock-sale-${createdSale.id}-${item.productId}`,
+          },
+        });
+      }
+
+      await tx.auditLog.create({
+        data: {
+          storeId,
+          actorId,
+          action: 'sale.completed',
+          entityType: 'sale',
+          entityId: createdSale.id,
+          metadata: {
+            receiptNumber: createdSale.receiptNumber,
+            total: createdSale.total.toString(),
+            paymentMethod: createdSale.paymentMethod,
+            customerLabel: createdSale.customerLabel,
+            itemCount: lineItemData.length,
+          },
+        },
+      });
+
+      return createdSale;
+    });
+
+    return this.getSaleById(storeId, sale.id);
+  }
+
+  async getDashboardSummary(storeId: string, period: 'today' | '7d' | '30d' = 'today') {
+    const now = new Date();
+    let startDate: Date;
+
+    if (period === 'today') {
+      const todayKolkata = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(now);
+      startDate = new Date(`${todayKolkata}T00:00:00.000+05:30`);
+    } else if (period === '7d') {
+      startDate = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+    } else {
+      startDate = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+    }
+
+    const sales = await this.prisma.sale.findMany({
+      where: {
+        storeId,
+        status: 'COMPLETED',
+        createdAt: { gte: startDate },
+      },
+      include: { items: true },
+    });
+
+    if (sales.length === 0) {
+      return {
+        sales: '0.00',
+        transactions: 0,
+        averageBasket: '0.00',
+        grossProfit: '0.00',
+      };
+    }
+
+    let totalRevenue = new Prisma.Decimal(0);
+    let totalCogs = new Prisma.Decimal(0);
+
+    for (const sale of sales) {
+      totalRevenue = totalRevenue.add(sale.total);
+      for (const item of sale.items) {
+        if (item.unitCostSnapshot) {
+          totalCogs = totalCogs.add(item.unitCostSnapshot.mul(item.quantity));
+        }
+      }
+    }
+
+    const transactions = sales.length;
+    const averageBasket = totalRevenue.div(transactions).toFixed(2);
+    const grossProfit = totalRevenue.sub(totalCogs).toFixed(2);
+
+    return {
+      sales: totalRevenue.toFixed(2),
+      transactions,
+      averageBasket,
+      grossProfit,
+    };
+  }
+
+  async getSalesAnalytics(storeId: string, days: number = 7): Promise<SalesAnalyticsSummary> {
+    const now = new Date();
+    const startDate = new Date(now.getTime() - (days - 1) * 24 * 60 * 60 * 1000);
+    startDate.setHours(0, 0, 0, 0);
+
+    const sales = await this.prisma.sale.findMany({
+      where: {
+        storeId,
+        status: 'COMPLETED',
+        createdAt: { gte: startDate },
+      },
+      include: { items: true },
+      orderBy: { createdAt: 'asc' },
+    });
+
+    const dayMap = new Map<
+      string,
+      {
+        revenue: Prisma.Decimal;
+        transactions: number;
+        cash: Prisma.Decimal;
+        upi: Prisma.Decimal;
+        credit: Prisma.Decimal;
+        cogs: Prisma.Decimal;
+      }
+    >();
+
+    // Initialize past N days
+    for (let i = days - 1; i >= 0; i--) {
+      const d = new Date(now.getTime() - i * 24 * 60 * 60 * 1000);
+      const dateKey = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(d);
+      dayMap.set(dateKey, {
+        revenue: new Prisma.Decimal(0),
+        transactions: 0,
+        cash: new Prisma.Decimal(0),
+        upi: new Prisma.Decimal(0),
+        credit: new Prisma.Decimal(0),
+        cogs: new Prisma.Decimal(0),
+      });
+    }
+
+    let overallRevenue = new Prisma.Decimal(0);
+    let overallCash = new Prisma.Decimal(0);
+    let overallUpi = new Prisma.Decimal(0);
+    let overallCredit = new Prisma.Decimal(0);
+    let overallCogs = new Prisma.Decimal(0);
+
+    for (const sale of sales) {
+      const dateKey = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(sale.createdAt);
+      let dayData = dayMap.get(dateKey);
+      if (!dayData) {
+        dayData = {
+          revenue: new Prisma.Decimal(0),
+          transactions: 0,
+          cash: new Prisma.Decimal(0),
+          upi: new Prisma.Decimal(0),
+          credit: new Prisma.Decimal(0),
+          cogs: new Prisma.Decimal(0),
+        };
+        dayMap.set(dateKey, dayData);
+      }
+
+      dayData.revenue = dayData.revenue.add(sale.total);
+      dayData.transactions += 1;
+      overallRevenue = overallRevenue.add(sale.total);
+
+      if (sale.paymentMethod === 'CASH') {
+        dayData.cash = dayData.cash.add(sale.total);
+        overallCash = overallCash.add(sale.total);
+      } else if (sale.paymentMethod === 'UPI') {
+        dayData.upi = dayData.upi.add(sale.total);
+        overallUpi = overallUpi.add(sale.total);
+      } else if (sale.paymentMethod === 'CREDIT') {
+        dayData.credit = dayData.credit.add(sale.total);
+        overallCredit = overallCredit.add(sale.total);
+      }
+
+      for (const item of sale.items) {
+        if (item.unitCostSnapshot) {
+          const itemCost = item.unitCostSnapshot.mul(item.quantity);
+          dayData.cogs = dayData.cogs.add(itemCost);
+          overallCogs = overallCogs.add(itemCost);
+        }
+      }
+    }
+
+    const points = Array.from(dayMap.entries()).map(([date, d]) => ({
+      date,
+      revenue: d.revenue.toFixed(2),
+      transactions: d.transactions,
+      cashTotal: d.cash.toFixed(2),
+      upiTotal: d.upi.toFixed(2),
+      creditTotal: d.credit.toFixed(2),
+    }));
+
+    const totalTransactions = sales.length;
+    const averageBasket = totalTransactions > 0 ? overallRevenue.div(totalTransactions).toFixed(2) : '0.00';
+    const grossProfit = overallRevenue.sub(overallCogs);
+    const grossMarginPercent = overallRevenue.gt(0)
+      ? grossProfit.div(overallRevenue).mul(100).toFixed(1) + '%'
+      : '0.0%';
+
+    return {
+      period: `${days}d`,
+      totalRevenue: overallRevenue.toFixed(2),
+      totalTransactions,
+      averageBasket,
+      grossProfit: grossProfit.toFixed(2),
+      grossMarginPercent,
+      cashTotal: overallCash.toFixed(2),
+      upiTotal: overallUpi.toFixed(2),
+      creditTotal: overallCredit.toFixed(2),
+      points,
+    };
+  }
+
+  async getTopSellingProducts(storeId: string, limit: number = 5): Promise<TopSellingProductResult[]> {
+    const items = await this.prisma.saleItem.groupBy({
+      by: ['productId', 'productNameSnapshot', 'stockUnitSnapshot'],
+      where: { sale: { storeId, status: 'COMPLETED' } },
+      _sum: { quantity: true, lineTotal: true },
+      orderBy: { _sum: { lineTotal: 'desc' } },
+      take: limit,
+    });
+
+    const productIds = items.map((i) => i.productId);
+    const products = await this.prisma.product.findMany({
+      where: { id: { in: productIds } },
+      include: { category: true },
+    });
+    const productMap = new Map(products.map((p) => [p.id, p]));
+
+    return items.map((item) => {
+      const prod = productMap.get(item.productId);
+      return {
+        productId: item.productId,
+        name: item.productNameSnapshot,
+        brand: prod?.brand || null,
+        category: prod?.category?.name || 'General Kirana',
+        stockUnit: item.stockUnitSnapshot,
+        unitsSold: item._sum.quantity?.toString() ?? '0',
+        revenue: item._sum.lineTotal?.toFixed(2) ?? '0.00',
+      };
+    });
+  }
+
+  async getFinanceSummary(storeId: string, from: Date, to: Date) {
+    const [sales, expenseAggregate] = await Promise.all([
+      this.prisma.sale.findMany({
+        where: {
+          storeId,
+          status: 'COMPLETED',
+          createdAt: { gte: from, lte: to },
+        },
+        include: { items: true },
+      }),
+      this.prisma.expense.aggregate({
+        where: {
+          storeId,
+          occurredAt: { gte: from, lte: to },
+        },
+        _sum: { amount: true },
+        _count: { _all: true },
+      }),
+    ]);
+
+    let revenue = new Prisma.Decimal(0);
+    let costOfGoodsSold = new Prisma.Decimal(0);
+
+    for (const sale of sales) {
+      revenue = revenue.add(sale.total);
+      for (const item of sale.items) {
+        if (item.unitCostSnapshot) {
+          costOfGoodsSold = costOfGoodsSold.add(item.unitCostSnapshot.mul(item.quantity));
+        }
+      }
+    }
+
+    const recordedExpenses = expenseAggregate._sum.amount ?? new Prisma.Decimal(0);
+    const expenseCount = expenseAggregate._count._all;
+
+    const grossProfit = revenue.sub(costOfGoodsSold);
+    const estimatedOperatingResult = grossProfit.sub(recordedExpenses);
+
+    return {
+      from: from.toISOString(),
+      to: to.toISOString(),
+      currency: 'INR',
+      revenue: revenue.toFixed(2),
+      costOfGoodsSold: costOfGoodsSold.toFixed(2),
+      grossProfit: grossProfit.toFixed(2),
+      recordedExpenses: recordedExpenses.toFixed(2),
+      expenseCount,
+      estimatedOperatingResult: estimatedOperatingResult.toFixed(2),
+      dataAvailable: true,
+      unavailable: [],
     };
   }
 }

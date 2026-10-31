@@ -7,8 +7,8 @@ import { ProductsPage } from './features/products/ProductsPage.js';
 import { InventoryPage } from './features/inventory/InventoryPage.js';
 import { SuppliersPage } from './features/suppliers/SuppliersPage.js';
 import { POSPage } from './features/pos/POSPage.js';
-import { SalesHistoryPage } from './features/pos/SalesHistoryPage.js';
-import { AIPage } from './features/ai/AIPage.js';
+import { SalesPage } from './features/sales/SalesPage.js';
+import { AnalyticsPage } from './features/analytics/AnalyticsPage.js';
 
 const nav = [
   { label: 'Overview', path: '/dashboard', icon: LayoutDashboard },
@@ -76,6 +76,7 @@ function Dashboard() {
   const [summaryError, setSummaryError] = useState('');
   const [activity, setActivity] = useState<ActivityItem[] | null>(null);
   const [activityError, setActivityError] = useState('');
+  const [salesTrend, setSalesTrend] = useState<Array<{ date: string; revenue: string; transactions: number }> | null>(null);
 
   useEffect(() => {
     apiRequest<DashboardSummary>('/dashboard/summary?period=today')
@@ -84,6 +85,9 @@ function Dashboard() {
     apiRequest<ActivityItem[]>('/dashboard/activity?limit=5')
       .then(setActivity)
       .catch((cause) => setActivityError(cause instanceof Error ? cause.message : 'Activity is unavailable.'));
+    apiRequest<{ points: Array<{ date: string; revenue: string; transactions: number }> }>('/analytics/sales?days=7')
+      .then((res) => setSalesTrend(res.points))
+      .catch(() => {});
   }, []);
 
   const today = new Intl.DateTimeFormat('en-IN', {
@@ -109,14 +113,14 @@ function Dashboard() {
       </div>
       <div className="notice">
         <span className="notice-icon">i</span>
-        <span><b>Demo workspace</b> · Connected store modules display live business records. Procurement module is active.</span>
+        <span><b>Demo workspace</b> · Connected store modules display live business records. POS, Sales, Procurement, and Analytics are fully active.</span>
       </div>
       {summaryError && <div className="error-banner" role="status">Dashboard data is unavailable: {summaryError}</div>}
       <section className="kpi-grid" aria-label="Today's key figures">
-        <Metric label="Today's sales" value={formatRupees(summary?.sales ?? null)} caption={summary?.dataAvailable ? 'Recorded completed sales' : 'Connect POS & sales'} icon="₹" />
+        <Metric label="Today's sales" value={formatRupees(summary?.sales ?? null)} caption="From recorded POS bills" icon="₹" />
         <Metric label="Open purchase orders" value={summary?.openPurchaseOrders?.toString() ?? '—'} caption="Active distributor orders" icon="▤" />
-        <Metric label="Average basket" value={formatRupees(summary?.averageBasket ?? null)} caption="Based on today's sales" icon="↗" />
-        <Metric label="Gross profit" value={formatRupees(summary?.grossProfit ?? null)} caption="Needs historical cost data" icon="◒" />
+        <Metric label="Average basket" value={formatRupees(summary?.averageBasket ?? null)} caption={`${summary?.transactions ?? 0} transactions today`} icon="↗" />
+        <Metric label="Gross profit" value={formatRupees(summary?.grossProfit ?? null)} caption="Sales minus cost basis" icon="◒" />
       </section>
       <div className="section-heading">
         <div>
@@ -128,8 +132,8 @@ function Dashboard() {
         <article className="panel ops-card">
           <div className="panel-icon amber"><Boxes size={19} /></div>
           <div>
-            <h3>Inventory health</h3>
-            <p>Stock levels appear here once inventory is connected.</p>
+            <h3>Inventory & Low Stock</h3>
+            <p>{summary?.lowStockCount ?? 0} item(s) below reorder threshold needing replenishment.</p>
           </div>
           <a href="/inventory" className="text-link">Open inventory <span>→</span></a>
         </article>
@@ -151,11 +155,31 @@ function Dashboard() {
             </div>
             <a href="/analytics" className="text-link">Analytics <span>→</span></a>
           </div>
-          <div className="empty-chart">
-            <div className="chart-placeholder"><BarChart3 size={28} /></div>
-            <b>Not enough data yet</b>
-            <span>Sales trends will show here when completed transactions are available.</span>
-          </div>
+          {salesTrend && salesTrend.some(p => Number(p.revenue) > 0) ? (
+            <div style={{ display: 'flex', alignItems: 'flex-end', gap: '8px', height: '170px', paddingTop: '15px' }}>
+              {salesTrend.map((pt) => {
+                const maxVal = Math.max(...salesTrend.map((p) => Number(p.revenue)), 1);
+                const h = (Number(pt.revenue) / maxVal) * 100;
+                const d = new Date(pt.date);
+                const dayName = new Intl.DateTimeFormat('en-IN', { weekday: 'short', timeZone: 'Asia/Kolkata' }).format(d);
+                return (
+                  <div key={pt.date} style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', height: '100%', justifyContent: 'flex-end' }}>
+                    <div style={{ fontSize: '9px', color: 'var(--muted)', fontWeight: 600, marginBottom: '4px' }}>
+                      {Number(pt.revenue) > 0 ? `₹${Math.round(Number(pt.revenue))}` : '0'}
+                    </div>
+                    <div style={{ width: '100%', maxWidth: '32px', height: `${Math.max(6, h)}%`, background: Number(pt.revenue) > 0 ? 'var(--green)' : '#e2e8f0', borderRadius: '4px 4px 0 0' }} />
+                    <span style={{ fontSize: '10px', marginTop: '6px', color: '#475569', fontWeight: 600 }}>{dayName}</span>
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <div className="empty-chart">
+              <div className="chart-placeholder"><BarChart3 size={28} /></div>
+              <b>Not enough data yet</b>
+              <span>Sales trends will show here when completed transactions are available.</span>
+            </div>
+          )}
         </section>
         <section className="panel activity-panel">
           <div className="panel-header">
@@ -221,7 +245,17 @@ function Placeholder({ title }: { title: string }) {
 }
 
 type Expense = { id: string; category: string; description: string | null; amount: string; currency: string; occurredAt: string };
-type DashboardSummary = { dataAvailable: boolean; sales: string | null; transactions: number | null; averageBasket: string | null; grossProfit: string | null; openPurchaseOrders: number | null; updatedAt: string | null };
+type DashboardSummary = {
+  dataAvailable: boolean;
+  sales: string | null;
+  transactions: number | null;
+  averageBasket: string | null;
+  grossProfit: string | null;
+  lowStockCount: number | null;
+  totalProducts: number | null;
+  openPurchaseOrders: number | null;
+  updatedAt: string | null;
+};
 type ActivityItem = { id: string; action: string; entityType: string; entityId: string | null; details: { category?: string } | null; occurredAt: string };
 type FinanceSummary = { recordedExpenses: string; expenseCount: number; revenue: string | null; costOfGoodsSold: string | null; grossProfit: string | null; estimatedOperatingResult: string | null };
 
@@ -283,13 +317,13 @@ function FinancePage() {
       </div>
       <div className="notice">
         <span className="notice-icon">i</span>
-        <span><b>Estimate only.</b> Sales, COGS, and gross profit are unavailable until the sales module provides historical cost records. Expenses include entries recorded for this date.</span>
+        <span><b>Live Store Ledger</b> · Recorded sales, COGS, and gross profit are calculated from live point-of-sale bills and item-level cost snapshots. Expenses include entries recorded for this date.</span>
       </div>
       {error && <div className="error-banner" role="alert">{error} <button onClick={() => void reload()}>Retry</button></div>}
       <section className="kpi-grid finance-kpis">
-        <Metric label="Recorded sales" value={formatRupees(summary?.revenue ?? null)} caption="Needs sales integration" icon="₹" />
-        <Metric label="Cost of goods" value={formatRupees(summary?.costOfGoodsSold ?? null)} caption="Needs sale-time costs" icon="▤" />
-        <Metric label="Gross profit" value={formatRupees(summary?.grossProfit ?? null)} caption="Not audited profit" icon="◒" />
+        <Metric label="Recorded sales" value={formatRupees(summary?.revenue ?? null)} caption={summary?.revenue !== null ? 'From completed POS bills' : 'No sales for this date'} icon="₹" />
+        <Metric label="Cost of goods" value={formatRupees(summary?.costOfGoodsSold ?? null)} caption={summary?.costOfGoodsSold !== null ? 'Wholesale cost basis' : 'Needs cost data'} icon="▤" />
+        <Metric label="Gross profit" value={formatRupees(summary?.grossProfit ?? null)} caption={summary?.grossProfit !== null ? 'Sales minus COGS' : 'Not audited profit'} icon="◒" />
         <Metric label="Recorded expenses" value={summary ? formatRupees(summary.recordedExpenses) : '—'} caption={`${summary?.expenseCount ?? '—'} entries for this date`} icon="−" />
       </section>
       <div className="finance-grid">
@@ -349,16 +383,16 @@ function App() {
         <Route path="/" element={<Navigate to="/dashboard" replace />} />
         <Route path="/dashboard" element={<Dashboard />} />
         <Route path="/pos" element={<POSPage />} />
-        <Route path="/sales" element={<SalesHistoryPage />} />
         <Route path="/products" element={<ProductsPage />} />
         <Route path="/inventory" element={<InventoryPage />} />
+        <Route path="/sales" element={<SalesPage />} />
         <Route path="/suppliers" element={<SuppliersPage initialTab="suppliers" />} />
         <Route path="/purchases" element={<SuppliersPage initialTab="orders" />} />
         <Route path="/finance" element={<FinancePage />} />
-        <Route path="/ai" element={<AIPage />} />
+        <Route path="/analytics" element={<AnalyticsPage />} />
         {nav
           .slice(1)
-          .filter((n) => !['/products', '/inventory', '/pos', '/sales', '/suppliers', '/purchases', '/finance', '/ai'].includes(n.path))
+          .filter((n) => !['/pos', '/products', '/inventory', '/sales', '/suppliers', '/purchases', '/finance', '/analytics'].includes(n.path))
           .map(({ label, path }) => (
             <Route key={path} path={path} element={<Placeholder title={label} />} />
           ))}

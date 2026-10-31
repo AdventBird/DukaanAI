@@ -2,8 +2,6 @@ import { z } from 'zod';
 
 export * from './suppliers/index.js';
 export * from './procurement/index.js';
-export * from './sales/index.js';
-export * from './ai/index.js';
 
 export const authContextSchema = z.object({
   userId: z.string().min(1),
@@ -12,46 +10,35 @@ export const authContextSchema = z.object({
 });
 export type AuthContext = z.infer<typeof authContextSchema>;
 
-export interface ApiResponse<T> {
-  success: boolean;
-  data?: T;
-  error?: {
-    code: string;
-    message: string;
-    details?: unknown;
-  };
-  meta?: {
-    requestId?: string;
-    pagination?: {
-      page: number;
-      pageSize: number;
-      total: number;
-      totalPages?: number;
-    };
-  };
-}
+export const successEnvelope = <T>(data: T, requestId: string) => ({ data, meta: { requestId } });
+export const errorEnvelope = (code: string, message: string, requestId: string, details: unknown[] = []) => ({
+  error: { code, message, details, requestId },
+});
 
-export function successEnvelope<T>(data: T, requestId?: string): ApiResponse<T> {
-  return {
-    success: true,
-    data,
-    meta: requestId ? { requestId } : undefined,
-  };
-}
+export const apiErrorCodes = [
+  'VALIDATION_ERROR', 'UNAUTHENTICATED', 'FORBIDDEN', 'NOT_FOUND', 'CONFLICT',
+  'INSUFFICIENT_STOCK', 'RATE_LIMITED', 'INTERNAL_ERROR', 'DEPENDENCY_UNAVAILABLE',
+] as const;
+export type ApiErrorCode = (typeof apiErrorCodes)[number];
 
-export function errorEnvelope(code: string, message: string, requestId?: string, details?: unknown): ApiResponse<never> {
-  return {
-    success: false,
-    error: { code, message, details },
-    meta: requestId ? { requestId } : undefined,
-  };
-}
+export const domainEventSchema = z.object({
+  eventId: z.string().uuid(),
+  eventType: z.string().min(1),
+  payloadVersion: z.number().int().positive(),
+  storeId: z.string().min(1),
+  entityType: z.string().min(1),
+  entityId: z.string().min(1),
+  occurredAt: z.string().datetime(),
+  actor: z.object({ type: z.enum(['USER', 'SYSTEM', 'AI']), id: z.string().optional() }),
+  payload: z.unknown(),
+});
+export type DomainEvent = z.infer<typeof domainEventSchema>;
 
 export const createExpenseSchema = z.object({
-  category: z.string().min(1).max(80),
-  description: z.string().max(500).optional(),
-  amount: z.string().regex(/^\d{1,10}(\.\d{1,2})?$/, 'Must be a valid decimal amount with up to 2 decimal places'),
-  currency: z.string().length(3).default('INR'),
+  category: z.string().trim().min(1).max(80),
+  description: z.string().trim().max(500).optional(),
+  amount: z.string().regex(/^\d{1,10}(\.\d{1,2})?$/).refine((value) => Number(value) > 0, 'Amount must be greater than zero.'),
+  currency: z.literal('INR').default('INR'),
   occurredAt: z.string().datetime(),
 });
 export type CreateExpenseInput = z.infer<typeof createExpenseSchema>;
@@ -131,7 +118,6 @@ export interface StockChangeResult {
   newQuantity: string;
   difference: string;
   movementId: string;
-  isDuplicate?: boolean;
 }
 
 export interface BarcodeLookupResult {
@@ -158,3 +144,90 @@ export interface LowStockResult {
   sellingPrice: string;
   updatedAt: string;
 }
+
+// ==========================================
+// Sales, POS & Analytics Schemas & Types (Dev 2)
+// ==========================================
+
+export const paymentMethods = ['CASH', 'UPI', 'CREDIT'] as const;
+export type PaymentMethod = (typeof paymentMethods)[number];
+
+export const saleStatuses = ['COMPLETED', 'CANCELLED'] as const;
+export type SaleStatus = (typeof saleStatuses)[number];
+
+export const createSaleItemInputSchema = z.object({
+  productId: z.string().min(1, 'Product ID is required'),
+  quantity: z.string().regex(/^\d{1,8}(\.\d{1,3})?$/, 'Quantity must be a valid positive decimal').refine((v) => Number(v) > 0, 'Quantity must be greater than zero'),
+  unitPrice: z.string().regex(/^\d{1,10}(\.\d{1,2})?$/).optional(),
+  discount: z.string().regex(/^\d{1,10}(\.\d{1,2})?$/).optional(),
+});
+export type CreateSaleItemInput = z.infer<typeof createSaleItemInputSchema>;
+
+export const createSaleInputSchema = z.object({
+  customerLabel: z.string().trim().max(100).optional(),
+  items: z.array(createSaleItemInputSchema).min(1, 'At least one item is required in the sale'),
+  paymentMethod: z.enum(paymentMethods).default('CASH'),
+  amountPaid: z.string().regex(/^\d{1,10}(\.\d{1,2})?$/).optional(),
+  notes: z.string().trim().max(300).optional(),
+  idempotencyKey: z.string().trim().min(1).max(128).optional(),
+});
+export type CreateSaleInput = z.infer<typeof createSaleInputSchema>;
+
+export interface SaleSummaryItem {
+  id: string;
+  receiptNumber: string;
+  status: SaleStatus;
+  subtotal: string;
+  discountTotal: string;
+  total: string;
+  paymentMethod: PaymentMethod;
+  paymentStatus: string;
+  amountPaid: string;
+  changeDue: string;
+  balanceDue: string;
+  customerLabel: string | null;
+  itemCount: number;
+  items?: Array<{
+    id: string;
+    productId: string;
+    productName: string;
+    stockUnit: string;
+    quantity: string;
+    unitPrice: string;
+    lineTotal: string;
+  }>;
+  createdAt: string;
+}
+
+export interface SalesAnalyticsPoint {
+  date: string;
+  revenue: string;
+  transactions: number;
+  cashTotal: string;
+  upiTotal: string;
+  creditTotal: string;
+}
+
+export interface SalesAnalyticsSummary {
+  period: string;
+  totalRevenue: string;
+  totalTransactions: number;
+  averageBasket: string;
+  grossProfit: string;
+  grossMarginPercent: string;
+  cashTotal: string;
+  upiTotal: string;
+  creditTotal: string;
+  points: SalesAnalyticsPoint[];
+}
+
+export interface TopSellingProductResult {
+  productId: string;
+  name: string;
+  brand: string | null;
+  category: string;
+  stockUnit: string;
+  unitsSold: string;
+  revenue: string;
+}
+
