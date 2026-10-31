@@ -3,6 +3,8 @@ import ReactDOM from 'react-dom/client';
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
 import { LayoutDashboard, ShoppingCart, Package, Boxes, ReceiptText, Truck, Wallet, Bot, BarChart3 } from 'lucide-react';
 import './styles.css';
+import { ProductsPage } from './features/products/ProductsPage.js';
+import { InventoryPage } from './features/inventory/InventoryPage.js';
 import { SuppliersPage } from './features/suppliers/SuppliersPage.js';
 
 const nav = [
@@ -343,12 +345,17 @@ function App() {
       <Routes>
         <Route path="/" element={<Navigate to="/dashboard" replace />} />
         <Route path="/dashboard" element={<Dashboard />} />
+        <Route path="/products" element={<ProductsPage />} />
+        <Route path="/inventory" element={<InventoryPage />} />
         <Route path="/suppliers" element={<SuppliersPage initialTab="suppliers" />} />
         <Route path="/purchases" element={<SuppliersPage initialTab="orders" />} />
         <Route path="/finance" element={<FinancePage />} />
-        {nav.slice(1).filter(n => n.path !== '/suppliers' && n.path !== '/finance').map(({ label, path }) => (
-          <Route key={path} path={path} element={<Placeholder title={label} />} />
-        ))}
+        {nav
+          .slice(1)
+          .filter((n) => !['/products', '/inventory', '/suppliers', '/purchases', '/finance'].includes(n.path))
+          .map(({ label, path }) => (
+            <Route key={path} path={path} element={<Placeholder title={label} />} />
+          ))}
         <Route path="*" element={<Navigate to="/dashboard" replace />} />
       </Routes>
     </Shell>

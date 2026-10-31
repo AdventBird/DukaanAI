@@ -5,13 +5,19 @@ import { randomUUID } from 'node:crypto';
 import { PrismaClient } from '@prisma/client';
 import { createExpenseSchema, errorEnvelope, successEnvelope, type AuthContext } from '@dukaanai/shared';
 
-// Domain modules (Dev 3)
+// Domain modules (Dev 1: Products & Inventory)
+import { createProductRouter } from './modules/products/product.routes.js';
+import { createInventoryRouter } from './modules/inventory/inventory.routes.js';
+import { InventoryService } from './modules/inventory/inventory.service.js';
+
+// Domain modules (Dev 3: Suppliers & Procurement)
 import { supplierRouter, supplierProductRouter } from './modules/suppliers/supplier.routes.js';
 import { quoteRouter, purchaseOrderRouter, goodsReceiptRouter } from './modules/procurement/procurement.routes.js';
 import { procurementService } from './modules/procurement/procurement.service.js';
 
 const app = express();
-const prisma = new PrismaClient();
+export const prisma = new PrismaClient();
+export const inventoryService = new InventoryService(prisma);
 const port = Number(process.env.PORT ?? 3001);
 const webOrigin = process.env.WEB_ORIGIN ?? 'http://localhost:5173';
 
@@ -47,30 +53,38 @@ app.get('/api/health', async (_req, res) => {
 });
 
 // Domain routes
+app.use('/api', createProductRouter(prisma));
+app.use('/api', createInventoryRouter(prisma));
 app.use('/api/suppliers', supplierRouter);
 app.use('/api/supplier-products', supplierProductRouter);
 app.use('/api', quoteRouter);
 app.use('/api/purchase-orders', purchaseOrderRouter);
 app.use('/api/goods-receipts', goodsReceiptRouter);
 
-app.get('/api/dashboard/summary', async (req, res) => {
+app.get('/api/dashboard/summary', async (req, res, next) => {
   if (!req.auth) return res.status(401).json(errorEnvelope('UNAUTHENTICATED', 'A valid session is required.', res.locals.requestId));
   const period = typeof req.query.period === 'string' ? req.query.period : 'today';
   if (!['today', '7d', '30d'].includes(period)) return res.status(400).json(errorEnvelope('VALIDATION_ERROR', 'Choose today, 7d, or 30d for the period.', res.locals.requestId));
 
-  const proc = await procurementService.getAnalyticsSummary(req.auth.storeId);
-  res.json(successEnvelope({
-    period,
-    storeId: req.auth.storeId,
-    dataAvailable: true,
-    sales: null,
-    transactions: null,
-    averageBasket: null,
-    grossProfit: null,
-    lowStockCount: null,
-    openPurchaseOrders: proc.openPurchaseOrders,
-    updatedAt: new Date().toISOString(),
-  }, res.locals.requestId));
+  try {
+    const health = await inventoryService.getInventoryHealth(req.auth.storeId);
+    const proc = await procurementService.getAnalyticsSummary(req.auth.storeId);
+    res.json(successEnvelope({
+      period,
+      storeId: req.auth.storeId,
+      dataAvailable: true,
+      sales: null,
+      transactions: null,
+      averageBasket: null,
+      grossProfit: null,
+      lowStockCount: health.lowStockCount,
+      totalProducts: health.totalProducts,
+      openPurchaseOrders: proc.openPurchaseOrders,
+      updatedAt: new Date().toISOString(),
+    }, res.locals.requestId));
+  } catch (error) {
+    next(error);
+  }
 });
 
 app.get('/api/dashboard/activity', async (req, res, next) => {
@@ -92,9 +106,25 @@ app.get('/api/analytics/products/top-selling', (req, res) => {
   if (!req.auth) return res.status(401).json(errorEnvelope('UNAUTHENTICATED', 'A valid session is required.', res.locals.requestId));
   res.json(successEnvelope({ dataAvailable: false, unavailableReason: 'SALES_MODULE_NOT_INTEGRATED', items: null }, res.locals.requestId));
 });
-app.get('/api/analytics/inventory/health', (req, res) => {
+app.get('/api/analytics/inventory/health', async (req, res, next) => {
   if (!req.auth) return res.status(401).json(errorEnvelope('UNAUTHENTICATED', 'A valid session is required.', res.locals.requestId));
-  res.json(successEnvelope({ dataAvailable: false, unavailableReason: 'INVENTORY_MODULE_NOT_INTEGRATED', lowStockCount: null, stockoutCount: null }, res.locals.requestId));
+  try {
+    const health = await inventoryService.getInventoryHealth(req.auth.storeId);
+    res.json(successEnvelope({
+      dataAvailable: true,
+      totalProducts: health.totalProducts,
+      lowStockCount: health.lowStockCount,
+      stockoutCount: health.stockoutCount,
+    }, res.locals.requestId));
+  } catch (error) { next(error); }
+});
+
+app.get('/api/analytics/inventory/low-stock', async (req, res, next) => {
+  if (!req.auth) return res.status(401).json(errorEnvelope('UNAUTHENTICATED', 'A valid session is required.', res.locals.requestId));
+  try {
+    const items = await inventoryService.getLowStock(req.auth.storeId);
+    res.json(successEnvelope(items, res.locals.requestId));
+  } catch (error) { next(error); }
 });
 
 app.get('/api/analytics/procurement/summary', async (req, res) => {
