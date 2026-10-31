@@ -7,3 +7,5 @@ coverage/
 *.log
 .DS_Store
 database/prisma/generated/
+Dev2.md
+dev2.md

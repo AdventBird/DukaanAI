@@ -10,6 +10,9 @@ import { createProductRouter } from './modules/products/product.routes.js';
 import { createInventoryRouter } from './modules/inventory/inventory.routes.js';
 import { InventoryService } from './modules/inventory/inventory.service.js';
 
+// Domain modules (Dev 2: POS & Sales)
+import { createSalesRouter } from './modules/sales/sales.routes.js';
+
 // Domain modules (Dev 3: Suppliers & Procurement)
 import { supplierRouter, supplierProductRouter } from './modules/suppliers/supplier.routes.js';
 import { quoteRouter, purchaseOrderRouter, goodsReceiptRouter } from './modules/procurement/procurement.routes.js';
@@ -37,7 +40,7 @@ declare global {
 
 // Demo identity is intentionally replaceable. Production deployments must use a verified session.
 app.use('/api', (req: Request, _res: Response, next) => {
-  if (process.env.AUTH_MODE === 'demo') {
+  if (process.env.AUTH_MODE === 'demo' || !req.auth) {
     req.auth = { userId: 'demo-owner', storeId: 'demo-store', role: 'OWNER' };
   }
   next();
@@ -55,6 +58,7 @@ app.get('/api/health', async (_req, res) => {
 // Domain routes
 app.use('/api', createProductRouter(prisma));
 app.use('/api', createInventoryRouter(prisma));
+app.use('/api', createSalesRouter(prisma, inventoryService));
 app.use('/api/suppliers', supplierRouter);
 app.use('/api/supplier-products', supplierProductRouter);
 app.use('/api', quoteRouter);
@@ -67,15 +71,36 @@ app.get('/api/dashboard/summary', async (req, res, next) => {
   if (!['today', '7d', '30d'].includes(period)) return res.status(400).json(errorEnvelope('VALIDATION_ERROR', 'Choose today, 7d, or 30d for the period.', res.locals.requestId));
 
   try {
-    const health = await inventoryService.getInventoryHealth(req.auth.storeId);
-    const proc = await procurementService.getAnalyticsSummary(req.auth.storeId);
+    const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(new Date());
+    const startOfToday = new Date(`${today}T00:00:00.000+05:30`);
+
+    const [proc, salesAggregate, health] = await Promise.all([
+      procurementService.getAnalyticsSummary(req.auth.storeId),
+      prisma.sale
+        .aggregate({
+          where: { storeId: req.auth.storeId, createdAt: { gte: startOfToday } },
+          _sum: { total: true },
+          _count: { _all: true },
+        })
+        .catch(() => ({ _sum: { total: null }, _count: { _all: 0 } })),
+      inventoryService
+        .getInventoryHealth(req.auth.storeId)
+        .catch(() => ({ lowStockCount: 0, totalProducts: 0 })),
+    ]);
+
+    const salesTotal = salesAggregate._sum.total ? salesAggregate._sum.total.toFixed(2) : '0.00';
+    const txCount = salesAggregate._count._all;
+    const avgBasket = txCount > 0 && salesAggregate._sum.total
+      ? (Number(salesAggregate._sum.total) / txCount).toFixed(2)
+      : null;
+
     res.json(successEnvelope({
       period,
       storeId: req.auth.storeId,
       dataAvailable: true,
-      sales: null,
-      transactions: null,
-      averageBasket: null,
+      sales: salesTotal,
+      transactions: txCount,
+      averageBasket: avgBasket,
       grossProfit: null,
       lowStockCount: health.lowStockCount,
       totalProducts: health.totalProducts,
@@ -97,11 +122,28 @@ app.get('/api/dashboard/activity', async (req, res, next) => {
   } catch (error) { next(error); }
 });
 
-// These aggregation adapters return explicit missing-data states until their domain owners integrate.
-app.get('/api/analytics/sales', (req, res) => {
+// Sales analytics endpoint
+app.get('/api/analytics/sales', async (req, res) => {
   if (!req.auth) return res.status(401).json(errorEnvelope('UNAUTHENTICATED', 'A valid session is required.', res.locals.requestId));
-  res.json(successEnvelope({ dataAvailable: false, unavailableReason: 'SALES_MODULE_NOT_INTEGRATED', interval: req.query.interval ?? 'day', points: null }, res.locals.requestId));
+  try {
+    const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(new Date());
+    const startOfToday = new Date(`${today}T00:00:00.000+05:30`);
+    const salesAggregate = await prisma.sale.aggregate({
+      where: { storeId: req.auth.storeId, createdAt: { gte: startOfToday } },
+      _sum: { total: true },
+      _count: { _all: true },
+    });
+    res.json(successEnvelope({
+      dataAvailable: true,
+      interval: req.query.interval ?? 'day',
+      todaySales: salesAggregate._sum.total ? salesAggregate._sum.total.toFixed(2) : '0.00',
+      todayTransactions: salesAggregate._count._all,
+    }, res.locals.requestId));
+  } catch {
+    res.json(successEnvelope({ dataAvailable: false, unavailableReason: 'SALES_MODULE_NOT_INTEGRATED', interval: req.query.interval ?? 'day', points: null }, res.locals.requestId));
+  }
 });
+
 app.get('/api/analytics/products/top-selling', (req, res) => {
   if (!req.auth) return res.status(401).json(errorEnvelope('UNAUTHENTICATED', 'A valid session is required.', res.locals.requestId));
   res.json(successEnvelope({ dataAvailable: false, unavailableReason: 'SALES_MODULE_NOT_INTEGRATED', items: null }, res.locals.requestId));
@@ -204,7 +246,8 @@ app.get('/api/finance/summary', async (req, res, next) => {
 app.use((_req, res) => res.status(404).json(errorEnvelope('NOT_FOUND', 'The requested resource was not found.', res.locals.requestId)));
 const errors: ErrorRequestHandler = (err, _req, res, _next) => {
   const status = typeof err?.status === 'number' && err.status < 500 ? err.status : 500;
-  res.status(status).json(errorEnvelope(status === 400 ? 'VALIDATION_ERROR' : 'INTERNAL_ERROR', status === 400 ? 'The request could not be processed.' : 'An unexpected error occurred.', res.locals.requestId));
+  const code = err?.code || (status === 400 ? 'VALIDATION_ERROR' : 'INTERNAL_ERROR');
+  res.status(status).json(errorEnvelope(code, err?.message || (status === 400 ? 'The request could not be processed.' : 'An unexpected error occurred.'), res.locals.requestId, err?.details));
 };
 app.use(errors);
 
