@@ -92,7 +92,7 @@ app.get('/api/dashboard/summary', async (req, res, next) => {
   let health: { totalProducts: number; lowStockCount: number; stockoutCount: number } | null = null;
   try {
     const healthPromise = inventoryService.getInventoryHealth(req.auth.storeId);
-    const timeoutPromise = new Promise<never>((_, reject) => setTimeout(() => reject(new Error('DB_TIMEOUT')), 600));
+    const timeoutPromise = new Promise<never>((_, reject) => setTimeout(() => reject(new Error('DB_TIMEOUT')), 5000));
     health = await Promise.race([healthPromise, timeoutPromise]);
   } catch {
     // Database service offline or pending Docker container launch
