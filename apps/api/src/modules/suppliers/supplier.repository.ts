@@ -1,12 +1,31 @@
 import { randomUUID } from 'node:crypto';
+import type { PrismaClient } from '@prisma/client';
 import type { Supplier, SupplierProduct } from '@dukaanai/shared';
 
 export class SupplierRepository {
+  private prisma: PrismaClient | null = null;
   private suppliers: Map<string, Supplier> = new Map();
   private supplierProducts: Map<string, SupplierProduct> = new Map();
 
   constructor() {
     this.seedDemoData();
+  }
+
+  configure(prisma: PrismaClient) { this.prisma = prisma; }
+
+  private toSupplier(row: any): Supplier {
+    return { ...row, createdAt: row.createdAt.toISOString(), updatedAt: row.updatedAt.toISOString() };
+  }
+
+  private toSupplierProduct(row: any): SupplierProduct {
+    return {
+      ...row,
+      unitsPerPurchasePack: row.unitsPerPurchasePack.toString(),
+      minimumOrderQuantity: row.minimumOrderQuantity.toString(),
+      lastQuotedPrice: row.lastQuotedPrice?.toString() ?? null,
+      createdAt: row.createdAt.toISOString(),
+      updatedAt: row.updatedAt.toISOString(),
+    };
   }
 
   private seedDemoData() {
@@ -150,6 +169,7 @@ export class SupplierRepository {
 
   // Supplier CRUD
   async createSupplier(storeId: string, data: Omit<Supplier, 'id' | 'storeId' | 'createdAt' | 'updatedAt' | 'isActive'>): Promise<Supplier> {
+    if (this.prisma) return this.toSupplier(await this.prisma.supplier.create({ data: { ...data, storeId } }));
     const id = `sup_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
     const now = new Date().toISOString();
     const supplier: Supplier = {
@@ -165,6 +185,23 @@ export class SupplierRepository {
   }
 
   async findSuppliers(storeId: string, options: { query?: string; includeArchived?: boolean; page: number; pageSize: number }) {
+    if (this.prisma) {
+      const where = {
+        storeId,
+        ...(options.includeArchived ? {} : { isActive: true }),
+        ...(options.query ? { OR: [
+          { name: { contains: options.query, mode: 'insensitive' as const } },
+          { contactPerson: { contains: options.query, mode: 'insensitive' as const } },
+          { phone: { contains: options.query } },
+          { city: { contains: options.query, mode: 'insensitive' as const } },
+        ] } : {}),
+      };
+      const [items, total] = await this.prisma.$transaction([
+        this.prisma.supplier.findMany({ where, orderBy: { createdAt: 'desc' }, skip: (options.page - 1) * options.pageSize, take: options.pageSize }),
+        this.prisma.supplier.count({ where }),
+      ]);
+      return { items: items.map((item) => this.toSupplier(item)), total, page: options.page, pageSize: options.pageSize };
+    }
     const all = Array.from(this.suppliers.values()).filter(s => {
       if (s.storeId !== storeId) return false;
       if (!options.includeArchived && !s.isActive) return false;
@@ -189,12 +226,22 @@ export class SupplierRepository {
   }
 
   async findSupplierById(storeId: string, supplierId: string): Promise<Supplier | null> {
+    if (this.prisma) {
+      const row = await this.prisma.supplier.findFirst({ where: { id: supplierId, storeId } });
+      return row ? this.toSupplier(row) : null;
+    }
     const s = this.suppliers.get(supplierId);
     if (!s || s.storeId !== storeId) return null;
     return s;
   }
 
   async updateSupplier(storeId: string, supplierId: string, data: Partial<Supplier>): Promise<Supplier | null> {
+    if (this.prisma) {
+      const { id: _id, storeId: _storeId, createdAt: _createdAt, updatedAt: _updatedAt, ...update } = data;
+      const result = await this.prisma.supplier.updateMany({ where: { id: supplierId, storeId }, data: update });
+      if (!result.count) return null;
+      return this.findSupplierById(storeId, supplierId);
+    }
     const s = await this.findSupplierById(storeId, supplierId);
     if (!s) return null;
     const updated: Supplier = {
@@ -225,6 +272,14 @@ export class SupplierRepository {
       lastQuotedPrice?: string | null;
     }
   ): Promise<SupplierProduct> {
+    if (this.prisma) {
+      const row = await this.prisma.supplierProduct.upsert({
+        where: { storeId_supplierId_productId: { storeId, supplierId, productId: data.productId } },
+        create: { storeId, supplierId, ...data, unitsPerPurchasePack: data.unitsPerPurchasePack, minimumOrderQuantity: data.minimumOrderQuantity },
+        update: { ...data, isActive: true },
+      });
+      return this.toSupplierProduct(row);
+    }
     // Check if mapping already exists
     const existing = Array.from(this.supplierProducts.values()).find(
       sp => sp.storeId === storeId && sp.supplierId === supplierId && sp.productId === data.productId
@@ -262,12 +317,20 @@ export class SupplierRepository {
   }
 
   async findProductsBySupplier(storeId: string, supplierId: string): Promise<SupplierProduct[]> {
+    if (this.prisma) {
+      const rows = await this.prisma.supplierProduct.findMany({ where: { storeId, supplierId, isActive: true }, orderBy: { createdAt: 'desc' } });
+      return rows.map((row) => this.toSupplierProduct(row));
+    }
     return Array.from(this.supplierProducts.values()).filter(
       sp => sp.storeId === storeId && sp.supplierId === supplierId && sp.isActive
     );
   }
 
   async findSupplierProductById(storeId: string, id: string): Promise<SupplierProduct | null> {
+    if (this.prisma) {
+      const row = await this.prisma.supplierProduct.findFirst({ where: { storeId, id } });
+      return row ? this.toSupplierProduct(row) : null;
+    }
     const sp = this.supplierProducts.get(id);
     if (!sp || sp.storeId !== storeId) return null;
     return sp;
@@ -278,6 +341,12 @@ export class SupplierRepository {
     id: string,
     data: Partial<SupplierProduct>
   ): Promise<SupplierProduct | null> {
+    if (this.prisma) {
+      const { id: _id, storeId: _storeId, supplierId: _supplierId, productId: _productId, createdAt: _createdAt, updatedAt: _updatedAt, ...update } = data;
+      const result = await this.prisma.supplierProduct.updateMany({ where: { storeId, id }, data: update });
+      if (!result.count) return null;
+      return this.findSupplierProductById(storeId, id);
+    }
     const sp = await this.findSupplierProductById(storeId, id);
     if (!sp) return null;
     const updated: SupplierProduct = {
@@ -294,6 +363,13 @@ export class SupplierRepository {
   }
 
   async findSuppliersForProduct(storeId: string, productId: string): Promise<{ supplier: Supplier; mapping: SupplierProduct }[]> {
+    if (this.prisma) {
+      const rows = await this.prisma.supplierProduct.findMany({
+        where: { storeId, productId, isActive: true, supplier: { isActive: true } },
+        include: { supplier: true },
+      });
+      return rows.map(({ supplier, ...mapping }) => ({ supplier: this.toSupplier(supplier), mapping: this.toSupplierProduct(mapping) }));
+    }
     const mappings = Array.from(this.supplierProducts.values()).filter(
       sp => sp.storeId === storeId && sp.productId === productId && sp.isActive
     );

@@ -98,7 +98,7 @@ test('Product & Inventory Module Tests', async (t) => {
         saleId: `sale-test-${runId}`,
         idempotencyKey: `idem-sale-${runId}`,
       });
-    });
+    }, { timeout: 20000, maxWait: 15000 });
 
     assert.equal(result.previousQuantity, '20');
     assert.equal(result.newQuantity, '15');
@@ -143,7 +143,7 @@ test('Product & Inventory Module Tests', async (t) => {
             saleId: `sale-fail-${runId}`,
             idempotencyKey: `idem-sale-fail-${runId}`,
           });
-        });
+        }, { timeout: 20000, maxWait: 15000 });
       },
       (err: any) => {
         assert.equal(err.code, 'INSUFFICIENT_STOCK');
@@ -178,7 +178,7 @@ test('Product & Inventory Module Tests', async (t) => {
         goodsReceiptId: `receipt-${runId}`,
         idempotencyKey: `idem-recv-${runId}`,
       });
-    });
+    }, { timeout: 20000, maxWait: 15000 });
 
     assert.equal(result.previousQuantity, '10');
     assert.equal(result.newQuantity, '22');

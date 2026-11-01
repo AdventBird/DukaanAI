@@ -1,9 +1,18 @@
 import { randomUUID } from 'node:crypto';
 import { PrismaClient, Prisma } from '@prisma/client';
+import { InventoryService } from '../inventory/inventory.service.js';
 import type { CreateSaleInput, SalesAnalyticsSummary, TopSellingProductResult } from '@dukaanai/shared';
 
 export class SalesService {
-  constructor(private readonly prisma: PrismaClient) {}
+  private readonly inventory: InventoryService;
+  private triggerService?: any;
+  constructor(private readonly prisma: PrismaClient, inventory?: InventoryService) {
+    this.inventory = inventory ?? new InventoryService(prisma);
+  }
+
+  setTriggerService(trigger: any) {
+    this.triggerService = trigger;
+  }
 
   async listSales(
     storeId: string,
@@ -55,33 +64,41 @@ export class SalesService {
       this.prisma.sale.count({ where }),
     ]);
 
-    return {
-      items: sales.map((sale) => ({
-        id: sale.id,
-        receiptNumber: sale.receiptNumber,
-        status: sale.status,
-        subtotal: sale.subtotal.toFixed(2),
-        discountTotal: sale.discountTotal.toFixed(2),
-        total: sale.total.toFixed(2),
-        paymentMethod: sale.paymentMethod,
-        paymentStatus: sale.paymentStatus,
-        amountPaid: sale.amountPaid.toFixed(2),
-        changeDue: sale.changeDue.toFixed(2),
-        balanceDue: sale.balanceDue.toFixed(2),
-        customerLabel: sale.customerLabel,
-        itemCount: sale.items.length,
-        items: sale.items.map((item) => ({
-          id: item.id,
-          productId: item.productId,
-          productName: item.productNameSnapshot,
-          barcode: item.barcodeSnapshot,
-          stockUnit: item.stockUnitSnapshot,
-          quantity: item.quantity.toString(),
-          unitPrice: item.unitPriceSnapshot.toFixed(2),
-          lineTotal: item.lineTotal.toFixed(2),
-        })),
-        createdAt: sale.createdAt.toISOString(),
+    const mappedSales = sales.map((sale) => ({
+      id: sale.id,
+      receiptNumber: sale.receiptNumber,
+      status: sale.status,
+      subtotal: sale.subtotal.toFixed(2),
+      discountTotal: sale.discountTotal.toFixed(2),
+      total: sale.total.toFixed(2),
+      paymentMethod: sale.paymentMethod,
+      paymentStatus: sale.paymentStatus,
+      amountPaid: sale.amountPaid.toFixed(2),
+      changeDue: sale.changeDue.toFixed(2),
+      balanceDue: sale.balanceDue.toFixed(2),
+      customerLabel: sale.customerLabel,
+      itemCount: sale.items.length,
+      items: sale.items.map((item) => ({
+        id: item.id,
+        productId: item.productId,
+        productName: item.productNameSnapshot,
+        productNameSnapshot: item.productNameSnapshot,
+        barcode: item.barcodeSnapshot,
+        barcodeSnapshot: item.barcodeSnapshot,
+        stockUnit: item.stockUnitSnapshot,
+        stockUnitSnapshot: item.stockUnitSnapshot,
+        quantity: item.quantity.toString(),
+        unitPrice: item.unitPriceSnapshot.toFixed(2),
+        unitPriceSnapshot: item.unitPriceSnapshot.toFixed(2),
+        lineTotal: item.lineTotal.toFixed(2),
       })),
+      createdAt: sale.createdAt.toISOString(),
+    }));
+
+    return {
+      sales: mappedSales,
+      items: mappedSales,
+      pagination: { total, page, pageSize },
       total,
       page,
       pageSize,
@@ -120,10 +137,14 @@ export class SalesService {
         id: item.id,
         productId: item.productId,
         productName: item.productNameSnapshot,
+        productNameSnapshot: item.productNameSnapshot,
         barcode: item.barcodeSnapshot,
+        barcodeSnapshot: item.barcodeSnapshot,
         stockUnit: item.stockUnitSnapshot,
+        stockUnitSnapshot: item.stockUnitSnapshot,
         quantity: item.quantity.toString(),
         unitPrice: item.unitPriceSnapshot.toFixed(2),
+        unitPriceSnapshot: item.unitPriceSnapshot.toFixed(2),
         lineTotal: item.lineTotal.toFixed(2),
       })),
       payments: sale.payments.map((p) => ({
@@ -138,7 +159,24 @@ export class SalesService {
     };
   }
 
-  async createSale(storeId: string, actorId: string, input: CreateSaleInput) {
+  async createSale(
+    storeId: string,
+    arg2: string | CreateSaleInput,
+    arg3?: string | CreateSaleInput
+  ) {
+    let actorId = 'cashier';
+    let input: CreateSaleInput;
+
+    if (typeof arg2 === 'string') {
+      actorId = arg2;
+      input = arg3 as CreateSaleInput;
+    } else {
+      input = arg2;
+      if (typeof arg3 === 'string') {
+        actorId = arg3;
+      }
+    }
+
     const idempotencyKey = input.idempotencyKey || `sale-${randomUUID()}`;
 
     // Check idempotency
@@ -147,6 +185,29 @@ export class SalesService {
       include: { items: true, payments: true },
     });
     if (existing) {
+      const incoming = input.items.map((item) => ({
+        productId: item.productId,
+        quantity: new Prisma.Decimal(item.quantity).toFixed(3),
+        price: new Prisma.Decimal(item.expectedSellingPrice).toFixed(2),
+      })).sort((a, b) => a.productId.localeCompare(b.productId));
+      const original = existing.items.map((item) => ({
+        productId: item.productId,
+        quantity: item.quantity.toFixed(3),
+        price: item.unitPriceSnapshot.toFixed(2),
+      })).sort((a, b) => a.productId.localeCompare(b.productId));
+      const paymentMethod = input.payment.method;
+      const changedCart = incoming.length !== original.length || incoming.some((item, index) =>
+        item.productId !== original[index]?.productId || item.quantity !== original[index]?.quantity ||
+        (item.price !== null && item.price !== original[index]?.price));
+      const tendered = input.payment.amountTendered;
+      const expectedPaid = tendered !== undefined ? (new Prisma.Decimal(tendered).gt(existing.total) ? existing.total : new Prisma.Decimal(tendered)) : existing.total;
+      const changedTender = tendered !== undefined && existing.payments[0] && !expectedPaid.equals(existing.payments[0].amount);
+      if (changedCart || paymentMethod !== existing.paymentMethod || (input.customerLabel ?? null) !== existing.customerLabel || changedTender) {
+        const error: any = new Error('Idempotency key was already used for a different checkout.');
+        error.code = 'IDEMPOTENCY_CONFLICT';
+        error.status = 409;
+        throw error;
+      }
       return this.getSaleById(storeId, existing.id);
     }
 
@@ -180,8 +241,15 @@ export class SalesService {
     for (const item of input.items) {
       const product = productMap.get(item.productId)!;
       const qty = new Prisma.Decimal(item.quantity);
-      const priceStr = (item as any).expectedSellingPrice || (item as any).unitPrice;
+      const priceStr = item.expectedSellingPrice;
       const unitPrice = priceStr ? new Prisma.Decimal(priceStr) : product.sellingPrice;
+      if (priceStr && !unitPrice.equals(product.sellingPrice)) {
+        const error: any = new Error(`Price changed for ${product.name}. Refresh the cart and review the current price.`);
+        error.code = 'PRICE_CHANGED';
+        error.status = 409;
+        error.details = { productId: product.id, expectedSellingPrice: unitPrice.toFixed(2), currentSellingPrice: product.sellingPrice.toFixed(2) };
+        throw error;
+      }
       const primaryBarcode = product.barcodes.find((b) => b.isPrimary)?.barcode || product.barcodes[0]?.barcode || null;
       const lineTotal = unitPrice.mul(qty);
 
@@ -201,12 +269,13 @@ export class SalesService {
     const discountTotal = new Prisma.Decimal(0);
     const total = subtotal.sub(discountTotal);
 
-    const paymentMethod = (input as any).payment?.method || (input as any).paymentMethod || 'CASH';
-    const amountTenderedStr = (input as any).payment?.amountTendered || (input as any).amountPaid;
-    const paymentRef = (input as any).payment?.reference || null;
+    const paymentMethod = input.payment.method;
+    const amountTenderedStr = input.payment.amountTendered;
+    const paymentRef = input.payment.reference || null;
 
-    const amountPaid = amountTenderedStr ? new Prisma.Decimal(amountTenderedStr) : (paymentMethod === 'CREDIT' ? new Prisma.Decimal(0) : total);
-    const changeDue = amountPaid.gt(total) ? amountPaid.sub(total) : new Prisma.Decimal(0);
+    const tendered = amountTenderedStr ? new Prisma.Decimal(amountTenderedStr) : (paymentMethod === 'CREDIT' ? new Prisma.Decimal(0) : total);
+    const changeDue = tendered.gt(total) ? tendered.sub(total) : new Prisma.Decimal(0);
+    const amountPaid = tendered.gt(total) ? total : tendered;
     const balanceDue = total.gt(amountPaid) ? total.sub(amountPaid) : new Prisma.Decimal(0);
 
     const paymentStatus = balanceDue.isZero() ? 'COMPLETED' : 'PENDING';
@@ -222,10 +291,22 @@ export class SalesService {
       },
     });
     const seq = String(countToday + 1).padStart(4, '0');
-    const receiptNumber = `BILL-${dateStr}-${seq}`;
+    const receiptNumber = `REC-${dateStr}-${seq}-${randomUUID().slice(0, 6).toUpperCase()}`;
 
     // Execute transaction: create sale, create sale items, deduct stock, log movement, record payment
     const sale = await this.prisma.$transaction(async (tx) => {
+      const freshProducts = await tx.product.findMany({ where: { id: { in: productIds }, storeId } });
+      const freshById = new Map(freshProducts.map((product) => [product.id, product]));
+      for (const item of lineItemData) {
+        const fresh = freshById.get(item.productId);
+        if (!fresh || !fresh.sellingPrice.equals(item.unitPriceSnapshot)) {
+          const error: any = new Error('A product price changed before checkout. Refresh the cart and try again.');
+          error.code = 'PRICE_CHANGED';
+          error.status = 409;
+          error.details = { productId: item.productId, expectedSellingPrice: item.unitPriceSnapshot.toFixed(2), currentSellingPrice: fresh ? fresh.sellingPrice.toFixed(2) : '0.00' };
+          throw error;
+        }
+      }
       const createdSale = await tx.sale.create({
         data: {
           storeId,
@@ -259,33 +340,12 @@ export class SalesService {
         include: { items: true, payments: true },
       });
 
-      // Stock deduction & movement tracking
-      for (const item of lineItemData) {
-        await tx.inventoryBalance.upsert({
-          where: { storeId_productId: { storeId, productId: item.productId } },
-          create: {
-            storeId,
-            productId: item.productId,
-            quantityOnHand: item.quantity.negated(),
-          },
-          update: {
-            quantityOnHand: { decrement: item.quantity },
-          },
-        });
-
-        await tx.stockMovement.create({
-          data: {
-            storeId,
-            productId: item.productId,
-            movementType: 'SALE',
-            quantityDelta: item.quantity.negated(),
-            unit: item.stockUnitSnapshot,
-            referenceType: 'SALE',
-            referenceId: createdSale.id,
-            actorType: 'STAFF',
-            actorId,
-            idempotencyKey: `stock-sale-${createdSale.id}-${item.productId}`,
-          },
+      // The canonical inventory service uses a conditional decrement so concurrent
+      // checkout transactions cannot oversell the same balance.
+      for (const item of createdSale.items) {
+        await this.inventory.deductForSale(tx, {
+          storeId, productId: item.productId, quantity: item.quantity.toString(),
+          saleId: createdSale.id, idempotencyKey: `stock-sale-${item.id}`, actorId,
         });
       }
 
@@ -300,14 +360,41 @@ export class SalesService {
             receiptNumber: createdSale.receiptNumber,
             total: createdSale.total.toString(),
             paymentMethod: createdSale.paymentMethod,
-            customerLabel: createdSale.customerLabel,
             itemCount: lineItemData.length,
           },
         },
       });
 
+      const eventId = randomUUID();
+      const occurredAt = new Date().toISOString();
+      const payload = {
+        eventId, eventType: 'sale.completed', payloadVersion: 1, storeId,
+        entityType: 'sale', entityId: createdSale.id, occurredAt,
+        actor: { type: 'USER', id: actorId },
+        payload: { receiptNumber: createdSale.receiptNumber, total: createdSale.total.toFixed(2), itemCount: lineItemData.length },
+      };
+      await tx.outboxEvent.create({ data: {
+        id: eventId, storeId, eventType: 'sale.completed', payloadVersion: 1,
+        entityType: 'sale', entityId: createdSale.id, payload,
+      } });
+
       return createdSale;
-    });
+    }, { timeout: 20000, maxWait: 15000 });
+
+    // Evaluate reorder conditions outside the transaction
+    if (this.triggerService && sale.items && sale.items.length > 0) {
+      for (const it of sale.items) {
+        this.triggerService
+          .evaluateProductReorder(storeId, it.productId, {
+            triggerSource: 'SALE_CHECKOUT',
+            actorId,
+            autoExecute: true,
+          })
+          .catch((err: any) => {
+            console.warn(`[SalesService] Replenishment trigger error for ${it.productId}:`, err?.message);
+          });
+      }
+    }
 
     return this.getSaleById(storeId, sale.id);
   }

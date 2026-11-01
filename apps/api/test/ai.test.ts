@@ -8,18 +8,13 @@ import { browserPortalAdapter } from '../src/modules/ai/adapters/browser.adapter
 import { AIService } from '../src/modules/ai/ai.service.js';
 import { procurementService } from '../src/modules/procurement/procurement.service.js';
 
-test('AI Config & Key Security - Masks key and allows custom key override', () => {
+test('AI Config & Key Security - has no embedded fallback and allows custom key override', () => {
   const config = getEffectiveAIConfig();
-  assert.ok(config.apiKey, 'API key must be resolved');
-  assert.ok(config.apiKey.length > 0, 'API key must not be empty');
+  assert.equal(config.keySource, process.env.AI_API_KEY ? 'SYSTEM_DEFAULT' : 'NONE');
 
   const health = getAIHealth(config);
-  assert.equal(health.keyConfigured, true);
-  assert.equal(health.status, 'READY');
-  assert.ok(health.maskedKey.startsWith('AQ.Ab8'), 'Masked key must start with prefix');
-  assert.ok(health.maskedKey.endsWith('DKqg'), 'Masked key must end with suffix');
-  assert.ok(health.maskedKey.includes('••••'), 'Masked key must hide middle characters');
-  assert.notEqual(health.maskedKey, config.apiKey, 'Masked key must NEVER equal raw key');
+  assert.equal(health.keyConfigured, Boolean(process.env.AI_API_KEY));
+  assert.equal(health.status, process.env.AI_API_KEY ? 'READY' : 'DEGRADED');
 
   // Custom key override
   const customConfig = getEffectiveAIConfig('custom-user-key-1234567890');
@@ -192,7 +187,7 @@ test('Durable Task State Machine - Checkpoints, approval pause, and step advance
   assert.ok(completed?.completedAt);
 });
 
-test('Mock Distributor Portal Browser Adapter - Handles submission with offline fallback', async () => {
+test('Mock Distributor Portal Browser Adapter - reports an offline portal as a failure', async () => {
   const result = await browserPortalAdapter.submitPurchaseOrder({
     supplierId: 'sup_metro',
     poNumber: 'PO-2026-0099',
@@ -208,11 +203,11 @@ test('Mock Distributor Portal Browser Adapter - Handles submission with offline 
     totalAmount: 1100,
   });
 
-  assert.equal(result.success, true);
-  assert.equal(result.status, 'ACKNOWLEDGED');
-  assert.ok(result.orderReference.startsWith('DIST-ORD-'));
+  assert.equal(result.success, false);
+  assert.equal(result.status, 'FAILED');
+  assert.equal(result.orderReference, '');
   assert.equal(result.poNumber, 'PO-2026-0099');
-  assert.ok(result.diagnostics);
+  assert.match(result.diagnostics ?? '', /failed/i);
 });
 
 test('AI Service & Bounded Orchestrator - Chat query and session management', async () => {

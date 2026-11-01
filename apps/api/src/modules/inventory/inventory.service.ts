@@ -65,11 +65,21 @@ export class InventoryService {
       throw error;
     }
 
-    // Atomically update balance
-    await tx.inventoryBalance.update({
-      where: { id: balance.id },
-      data: { quantityOnHand: newQty },
+    // Conditional decrement prevents two concurrent checkouts from both spending
+    // the same on-hand units. PostgreSQL rechecks the predicate after row locking.
+    const changed = await tx.inventoryBalance.updateMany({
+      where: { id: balance.id, storeId, productId, quantityOnHand: { gte: qtyToDeduct } },
+      data: { quantityOnHand: { decrement: qtyToDeduct } },
     });
+    if (changed.count !== 1) {
+      const latest = await tx.inventoryBalance.findUnique({ where: { storeId_productId: { storeId, productId } } });
+      const available = latest?.quantityOnHand ?? new Prisma.Decimal(0);
+      const error: any = new Error(`Insufficient stock. Available: ${available.toString()}, Requested: ${qtyToDeduct.toString()}`);
+      error.code = 'INSUFFICIENT_STOCK';
+      error.status = 409;
+      throw error;
+    }
+    const updatedBalance = await tx.inventoryBalance.findUniqueOrThrow({ where: { id: balance.id } });
 
     // Create append-only stock movement
     const movement = await tx.stockMovement.create({
@@ -92,7 +102,7 @@ export class InventoryService {
       success: true,
       productId,
       previousQuantity: currentQty.toString(),
-      newQuantity: newQty.toString(),
+      newQuantity: updatedBalance.quantityOnHand.toString(),
       difference: qtyToDeduct.negated().toString(),
       movementId: movement.id,
     };
@@ -167,8 +177,9 @@ export class InventoryService {
 
     await tx.inventoryBalance.update({
       where: { id: balanceId },
-      data: { quantityOnHand: newQty },
+      data: { quantityOnHand: { increment: qtyToAdd } },
     });
+    const updatedBalance = await tx.inventoryBalance.findUniqueOrThrow({ where: { id: balanceId } });
 
     const movement = await tx.stockMovement.create({
       data: {
@@ -190,7 +201,7 @@ export class InventoryService {
       success: true,
       productId,
       previousQuantity: currentQty.toString(),
-      newQuantity: newQty.toString(),
+      newQuantity: updatedBalance.quantityOnHand.toString(),
       difference: qtyToAdd.toString(),
       movementId: movement.id,
     };

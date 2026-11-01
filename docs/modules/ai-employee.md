@@ -4,17 +4,17 @@
 **Developer:** Developer 4 of 5  
 **Repository:** `AdventBird/DukaanAI`  
 **Date:** 31 October 2026 / 1 November 2026  
-**Status:** MVP Implemented, Tested, and Integrated  
+**Status:** Deferred pending durable business-data readiness
 
 ---
 
 ## 1. Executive Summary
 
-Developer 4 delivers an always-on, autonomous AI employee ("Digital Munimji") for single-owner Indian kirana stores:
+Developer 4 contributed AI employee interfaces and adapters. Activation is deferred until durable business-data readiness, verified authentication, and reliable procurement persistence are complete.
 1. **Configurable LLM Runtime:**
    - Connects to Google Gemini via an OpenAI-compatible API layer (`models/gemini-3.5-flash`).
-   - Resolves system default API key automatically (`AQ.Ab8RN6...`) with base64 runtime fallback so every user has working AI out-of-the-box.
-   - Strictly protects credentials: keys are never visible in plain text in UI, API responses, or git commits; masked as `AQ.Ab8••••••••DKqg`.
+   - Uses only an environment-provided provider API key or a user-provided key for the current request. No fallback credential is embedded in source.
+   - Provider credentials are masked in health responses and must not be committed. Any credential previously committed must be rotated by its owner.
    - Offers an in-app Settings modal allowing users to enter, save, or revert their own custom API keys (passed via `x-ai-api-key` header).
 2. **Bounded Orchestrator & Safety Boundaries:**
    - Multi-step Observe-Plan-Act-Verify cycle with allowlisted business tools.
@@ -45,7 +45,7 @@ Developer 4 delivers an always-on, autonomous AI employee ("Digital Munimji") fo
 
 ### AI Health & Configuration
 - `GET /api/ai/health`
-  - Returns runtime status (`READY`), active model name, key source (`SYSTEM_DEFAULT` or `CUSTOM`), and masked API key (`AQ.Ab8••••••••DKqg`).
+  - Returns runtime status, active model name, key source, and a masked API key only when a key is configured.
   - Supports `x-ai-api-key` header to check health of a user-supplied key.
 
 ### Conversational Assistant

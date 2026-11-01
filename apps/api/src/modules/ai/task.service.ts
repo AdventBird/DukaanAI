@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import type { PrismaClient } from '@prisma/client';
 import type {
   AgentTaskRecord,
   AgentTaskStatus,
@@ -8,6 +9,11 @@ import type {
 
 export class TaskService {
   private readonly tasks = new Map<string, AgentTaskRecord>();
+  private prisma: PrismaClient | null = null;
+
+  setPrisma(prisma: PrismaClient) {
+    this.prisma = prisma;
+  }
 
   createTask(params: {
     storeId: string;
@@ -46,11 +52,27 @@ export class TaskService {
     };
 
     this.tasks.set(taskId, task);
+    this.persistTask(task);
     return task;
   }
 
   getTask(taskId: string): AgentTaskRecord | undefined {
     return this.tasks.get(taskId);
+  }
+
+  async getTaskAsync(taskId: string): Promise<AgentTaskRecord | undefined> {
+    const cached = this.tasks.get(taskId);
+    if (cached) return cached;
+
+    if (this.prisma) {
+      const row = await this.prisma.agentTask.findUnique({ where: { id: taskId } });
+      if (row) {
+        const record = this.fromRow(row);
+        this.tasks.set(record.id, record);
+        return record;
+      }
+    }
+    return undefined;
   }
 
   listTasks(storeId: string, statusFilter?: AgentTaskStatus): AgentTaskRecord[] {
@@ -59,6 +81,69 @@ export class TaskService {
       return all.filter((t) => t.status === statusFilter);
     }
     return all.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  }
+
+  async listTasksAsync(storeId: string, statusFilter?: AgentTaskStatus): Promise<AgentTaskRecord[]> {
+    if (this.prisma) {
+      try {
+        const rows = await this.prisma.agentTask.findMany({
+          where: {
+            storeId,
+            ...(statusFilter ? { status: statusFilter } : {}),
+          },
+          orderBy: { createdAt: 'desc' },
+        });
+        for (const row of rows) {
+          this.tasks.set(row.id, this.fromRow(row));
+        }
+      } catch {
+        // Fallback to in-memory if query fails
+      }
+    }
+    return this.listTasks(storeId, statusFilter);
+  }
+
+  findOpenReplenishmentTask(storeId: string, productId: string): AgentTaskRecord | undefined {
+    // Check in-memory map
+    const openStatuses: AgentTaskStatus[] = ['QUEUED', 'RUNNING', 'WAITING_APPROVAL', 'NEEDS_ATTENTION'];
+    for (const t of this.tasks.values()) {
+      if (
+        t.storeId === storeId &&
+        t.relatedEntityType === 'PRODUCT' &&
+        t.relatedEntityId === productId &&
+        openStatuses.includes(t.status)
+      ) {
+        return t;
+      }
+    }
+    return undefined;
+  }
+
+  async findOpenReplenishmentTaskAsync(storeId: string, productId: string): Promise<AgentTaskRecord | undefined> {
+    const inMem = this.findOpenReplenishmentTask(storeId, productId);
+    if (inMem) return inMem;
+
+    if (this.prisma) {
+      try {
+        const row = await this.prisma.agentTask.findFirst({
+          where: {
+            storeId,
+            relatedEntityType: 'PRODUCT',
+            relatedEntityId: productId,
+            status: { in: ['QUEUED', 'RUNNING', 'WAITING_APPROVAL', 'NEEDS_ATTENTION'] },
+          },
+          orderBy: { createdAt: 'desc' },
+        });
+        if (row) {
+          const rec = this.fromRow(row);
+          this.tasks.set(rec.id, rec);
+          return rec;
+        }
+      } catch {
+        // Continue
+      }
+    }
+    return undefined;
   }
 
   updateTaskStatus(
@@ -79,6 +164,8 @@ export class TaskService {
     if (status === 'COMPLETED' || status === 'FAILED' || status === 'CANCELLED') {
       task.completedAt = task.updatedAt;
     }
+
+    this.persistTask(task);
     return task;
   }
 
@@ -105,6 +192,7 @@ export class TaskService {
     }
 
     task.updatedAt = new Date().toISOString();
+    this.persistTask(task);
     return task;
   }
 
@@ -120,7 +208,66 @@ export class TaskService {
     task.lastErrorCode = reason || 'CANCELLED_BY_USER';
     task.completedAt = new Date().toISOString();
     task.updatedAt = task.completedAt;
+    this.persistTask(task);
     return task;
+  }
+
+  private persistTask(task: AgentTaskRecord) {
+    if (!this.prisma) return;
+    this.prisma.agentTask.upsert({
+      where: { id: task.id },
+      update: {
+        status: task.status,
+        currentStep: task.currentStep,
+        steps: task.steps as any,
+        checkpoint: task.checkpoint as any,
+        attemptCount: task.attemptCount,
+        lastErrorCode: task.lastErrorCode,
+        completedAt: task.completedAt ? new Date(task.completedAt) : null,
+      },
+      create: {
+        id: task.id,
+        storeId: task.storeId,
+        taskType: task.taskType,
+        status: task.status,
+        relatedEntityType: task.relatedEntityType,
+        relatedEntityId: task.relatedEntityId,
+        inputSummary: task.inputSummary,
+        currentStep: task.currentStep,
+        steps: task.steps as any,
+        checkpoint: task.checkpoint as any,
+        attemptCount: task.attemptCount,
+        maxAttempts: task.maxAttempts,
+        lastErrorCode: task.lastErrorCode,
+        completedAt: task.completedAt ? new Date(task.completedAt) : null,
+      },
+    }).catch((err) => {
+      console.warn(`[TaskService] Background persistence error for task ${task.id}:`, err?.message);
+    });
+  }
+
+  private fromRow(row: any): AgentTaskRecord {
+    return {
+      id: row.id,
+      storeId: row.storeId,
+      taskType: row.taskType as AgentTaskType,
+      status: row.status as AgentTaskStatus,
+      relatedEntityType: row.relatedEntityType,
+      relatedEntityId: row.relatedEntityId,
+      inputSummary: row.inputSummary,
+      currentStep: row.currentStep,
+      steps: (row.steps || []) as AgentTaskStep[],
+      checkpoint: (row.checkpoint || {}) as Record<string, unknown>,
+      attemptCount: row.attemptCount,
+      maxAttempts: row.maxAttempts,
+      nextRunAt: row.nextRunAt?.toISOString() || null,
+      leaseOwner: row.leaseOwner,
+      leaseExpiresAt: row.leaseExpiresAt?.toISOString() || null,
+      lastErrorCode: row.lastErrorCode,
+      createdAt: row.createdAt?.toISOString() || new Date().toISOString(),
+      updatedAt: row.updatedAt?.toISOString() || new Date().toISOString(),
+      completedAt: row.completedAt?.toISOString() || null,
+    };
   }
 }
 

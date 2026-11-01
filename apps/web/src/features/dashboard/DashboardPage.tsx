@@ -396,7 +396,7 @@ export function DashboardPage() {
             </span>
           </div>
           <strong>{formatINR(summary?.sales ?? null)}</strong>
-          <small>{summary?.transactions ?? 0} customer bills generated</small>
+          <small>{summary?.transactions === null || summary?.transactions === undefined ? 'Sales data unavailable' : `${summary.transactions} customer bills generated`}</small>
         </article>
 
         <article className="panel metric" style={{ borderLeft: '4px solid #0284c7' }}>
@@ -429,10 +429,10 @@ export function DashboardPage() {
             </span>
           </div>
           <strong style={{ color: lowStockItems.length > 0 ? '#be123c' : 'inherit' }}>
-            {summary?.lowStockCount ?? lowStockItems.length} Low Stock
+            {summary?.lowStockCount === null || summary?.lowStockCount === undefined ? 'Unavailable' : `${summary.lowStockCount} Low Stock`}
           </strong>
           <small>
-            {summary?.openPurchaseOrders ?? 1} distributor order(s) active
+            {summary?.openPurchaseOrders === null || summary?.openPurchaseOrders === undefined ? 'Procurement data unavailable' : `${summary.openPurchaseOrders} distributor order(s) active`}
           </small>
         </article>
       </section>
@@ -928,13 +928,23 @@ export function DashboardPage() {
               <button onClick={() => setShowReorderModal(false)} className="btn-secondary" style={{ flex: 1 }}>
                 Dismiss
               </button>
-              <a
-                href="/purchases"
+              <button
+                onClick={async () => {
+                  try {
+                    await fetch(`${apiBase}/ai/trigger-check`, {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                    });
+                    window.location.href = '/ai';
+                  } catch (e) {
+                    window.location.href = '/ai';
+                  }
+                }}
                 className="primary-button"
-                style={{ flex: 1, textAlign: 'center', textDecoration: 'none' }}
+                style={{ flex: 1.4, textAlign: 'center', cursor: 'pointer', border: 'none', background: 'var(--green)', color: '#fff', fontWeight: 600, padding: '9px 12px', borderRadius: '6px' }}
               >
-                Go to Procurement <span>→</span>
-              </a>
+                ⚡ Trigger AI Restocking Agent <span>→</span>
+              </button>
             </div>
           </div>
         </div>

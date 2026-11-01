@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { Prisma, type PrismaClient } from '@prisma/client';
 import type {
   QuoteStatus,
   QuoteSource,
@@ -173,6 +174,7 @@ export interface StoredInvoiceAttachment {
 }
 
 export class ProcurementRepository {
+  private prisma: PrismaClient | null = null;
   private quoteRequests: Map<string, StoredQuoteRequest> = new Map();
   private supplierQuotes: Map<string, StoredSupplierQuote> = new Map();
   private purchaseOrders: Map<string, StoredPurchaseOrder> = new Map();
@@ -184,6 +186,106 @@ export class ProcurementRepository {
 
   constructor() {
     this.seedDemoData();
+  }
+
+  configure(prisma: PrismaClient) { this.prisma = prisma; }
+
+  private toQuoteRequest(row: any): StoredQuoteRequest {
+    return {
+      id: row.id, storeId: row.storeId, requestNumber: row.requestNumber,
+      supplierIds: row.suppliers.map((link: any) => link.supplierId), status: row.status,
+      requestedById: row.requestedById, notes: row.notes,
+      items: row.items.map((item: any) => ({
+        id: item.id, quoteRequestId: row.id, productId: item.productId, productName: item.productName,
+        requestedQuantityInPurchasePacks: item.requestedQuantityInPacks.toString(),
+        requestedPurchaseUnitLabel: item.purchaseUnitLabel,
+        unitsPerPackSnapshot: item.unitsPerPackSnapshot.toString(), notes: item.notes,
+      })),
+      createdAt: row.createdAt.toISOString(), sentAt: row.sentAt.toISOString(),
+    };
+  }
+
+  private toQuote(row: any): StoredSupplierQuote {
+    return {
+      id: row.id, storeId: row.storeId, supplierId: row.supplierId, supplierName: row.supplierName,
+      quoteRequestId: row.quoteRequestId, quoteReference: row.quoteReference, status: row.status,
+      source: row.source, sourceReference: row.sourceReference,
+      deliveryCharge: row.deliveryCharge.toString(), otherCharges: row.otherCharges.toString(),
+      discountAmount: row.discountAmount.toString(), quotedAt: row.quotedAt.toISOString(),
+      validUntil: row.validUntil?.toISOString() ?? null,
+      expectedDeliveryDate: row.expectedDeliveryDate?.toISOString() ?? null,
+      leadTimeDays: row.leadTimeDays, notes: row.notes,
+      items: row.items.map((item: any) => ({
+        id: item.id, supplierQuoteId: row.id, productId: item.productId,
+        quotedProductNameSnapshot: item.quotedProductNameSnapshot, supplierSkuSnapshot: item.supplierSkuSnapshot,
+        quotedQuantityInPurchasePacks: item.quotedQuantityInPurchasePacks.toString(),
+        purchaseUnitLabelSnapshot: item.purchaseUnitLabelSnapshot,
+        unitsPerPackSnapshot: item.unitsPerPackSnapshot.toString(),
+        unitPricePerPurchasePack: item.unitPricePerPurchasePack.toString(),
+        lineDiscount: item.lineDiscount.toString(), freeStockUnits: item.freeStockUnits.toString(),
+        isAvailable: item.isAvailable, createdAt: item.createdAt.toISOString(),
+      })),
+      createdAt: row.createdAt.toISOString(),
+    };
+  }
+
+  toPurchaseOrder(row: any): StoredPurchaseOrder {
+    const date = (value: Date | null) => value?.toISOString() ?? null;
+    return {
+      ...row,
+      subtotal: row.subtotal.toString(), discountTotal: row.discountTotal.toString(),
+      chargesTotal: row.chargesTotal.toString(), estimatedTotal: row.estimatedTotal.toString(),
+      expectedDeliveryDate: date(row.expectedDeliveryDate), approvedAt: date(row.approvedAt),
+      submittedAt: date(row.submittedAt), acknowledgedAt: date(row.acknowledgedAt),
+      receivedAt: date(row.receivedAt), cancelledAt: date(row.cancelledAt),
+      createdAt: row.createdAt.toISOString(), updatedAt: row.updatedAt.toISOString(),
+      items: row.items.map((item: any) => ({
+        ...item,
+        orderedQuantityInPurchasePacks: item.orderedQuantityInPurchasePacks.toString(),
+        unitsPerPackSnapshot: item.unitsPerPackSnapshot.toString(),
+        orderedQuantityInStockUnits: item.orderedQuantityInStockUnits.toString(),
+        unitPricePerPurchasePack: item.unitPricePerPurchasePack.toString(),
+        lineDiscount: item.lineDiscount.toString(), lineTotal: item.lineTotal.toString(),
+        receivedQuantityInStockUnits: item.receivedQuantityInStockUnits.toString(),
+      })),
+    };
+  }
+
+  toGoodsReceipt(row: any): StoredGoodsReceipt {
+    return {
+      ...row,
+      deliveredAt: row.deliveredAt.toISOString(), verifiedAt: row.verifiedAt?.toISOString() ?? null,
+      createdAt: row.createdAt.toISOString(), updatedAt: row.updatedAt.toISOString(),
+      items: row.items.map((item: any) => ({
+        ...item,
+        deliveredQuantityInPurchasePacks: item.deliveredQuantityInPurchasePacks.toString(),
+        acceptedQuantityInStockUnits: item.acceptedQuantityInStockUnits.toString(),
+        damagedQuantityInStockUnits: item.damagedQuantityInStockUnits.toString(),
+        rejectedQuantityInStockUnits: item.rejectedQuantityInStockUnits.toString(),
+        shortQuantityInStockUnits: item.shortQuantityInStockUnits.toString(),
+        excessQuantityInStockUnits: item.excessQuantityInStockUnits.toString(),
+        unitsPerPackSnapshot: item.unitsPerPackSnapshot.toString(),
+      })),
+    };
+  }
+
+  transaction<T>(operation: (tx: Prisma.TransactionClient) => Promise<T>) {
+    if (!this.prisma) throw new Error('Persistent procurement storage is not configured.');
+    return this.prisma.$transaction(operation, { timeout: 20000, maxWait: 15000 });
+  }
+
+  private toInvoice(row: any): StoredInvoiceAttachment {
+    return {
+      id: row.id, storeId: row.storeId, purchaseOrderId: row.purchaseOrderId,
+      invoiceNumber: row.invoiceNumber, invoiceDate: row.invoiceDate.toISOString(),
+      totalInvoicedAmount: row.totalInvoicedAmount.toString(), fileReference: row.fileReference,
+      notes: row.notes,
+      lineItems: row.items.map((item: any) => ({
+        productId: item.productId, invoicedPacks: item.invoicedPacks.toString(),
+        invoicedPricePerPack: item.invoicedPricePerPack.toString(), invoicedTotal: item.invoicedTotal.toString(),
+      })),
+      createdAt: row.createdAt.toISOString(),
+    };
   }
 
   private seedDemoData() {
@@ -354,6 +456,23 @@ export class ProcurementRepository {
     requestedById: string,
     data: { supplierIds: string[]; notes?: string; items: Array<Omit<StoredQuoteRequestItem, 'id' | 'quoteRequestId'>> }
   ): Promise<StoredQuoteRequest> {
+    if (this.prisma) {
+      const id = randomUUID();
+      const row = await this.prisma.quoteRequest.create({
+        data: {
+          id, storeId, requestNumber: `QR-${new Date().getUTCFullYear()}-${Date.now()}`,
+          requestedById, notes: data.notes ?? null,
+          suppliers: { create: data.supplierIds.map((supplierId) => ({ storeId, supplierId })) },
+          items: { create: data.items.map((item) => ({
+            productId: item.productId, productName: item.productName,
+            requestedQuantityInPacks: item.requestedQuantityInPurchasePacks,
+            purchaseUnitLabel: item.requestedPurchaseUnitLabel,
+            unitsPerPackSnapshot: item.unitsPerPackSnapshot, notes: item.notes ?? null,
+          })) },
+        }, include: { suppliers: true, items: true },
+      });
+      return this.toQuoteRequest(row);
+    }
     const id = `qr_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
     const requestNumber = `QR-2026-${++this.requestCounter}`;
     const now = new Date().toISOString();
@@ -382,12 +501,20 @@ export class ProcurementRepository {
   }
 
   async findQuoteRequests(storeId: string) {
+    if (this.prisma) {
+      const rows = await this.prisma.quoteRequest.findMany({ where: { storeId }, include: { suppliers: true, items: true }, orderBy: { createdAt: 'desc' } });
+      return rows.map((row) => this.toQuoteRequest(row));
+    }
     return Array.from(this.quoteRequests.values())
       .filter(qr => qr.storeId === storeId)
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   }
 
   async findQuoteRequestById(storeId: string, id: string): Promise<StoredQuoteRequest | null> {
+    if (this.prisma) {
+      const row = await this.prisma.quoteRequest.findFirst({ where: { id, storeId }, include: { suppliers: true, items: true } });
+      return row ? this.toQuoteRequest(row) : null;
+    }
     const qr = this.quoteRequests.get(id);
     if (!qr || qr.storeId !== storeId) return null;
     return qr;
@@ -401,6 +528,21 @@ export class ProcurementRepository {
       items: Array<Omit<StoredSupplierQuoteItem, 'id' | 'supplierQuoteId' | 'createdAt'>>;
     }
   ): Promise<StoredSupplierQuote> {
+    if (this.prisma) {
+      const row = await this.prisma.supplierQuote.create({
+        data: {
+          storeId, supplierId: data.supplierId, supplierName,
+          quoteRequestId: data.quoteRequestId ?? null, quoteReference: data.quoteReference ?? null,
+          status: 'RECEIVED', source: data.source, sourceReference: data.sourceReference ?? null,
+          deliveryCharge: data.deliveryCharge, otherCharges: data.otherCharges, discountAmount: data.discountAmount,
+          quotedAt: new Date(data.quotedAt), validUntil: data.validUntil ? new Date(data.validUntil) : null,
+          expectedDeliveryDate: data.expectedDeliveryDate ? new Date(data.expectedDeliveryDate) : null,
+          leadTimeDays: data.leadTimeDays ?? null, notes: data.notes ?? null,
+          items: { create: data.items.map((item) => ({ ...item })) },
+        }, include: { items: true },
+      });
+      return this.toQuote(row);
+    }
     const id = `quote_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
     const now = new Date().toISOString();
 
@@ -426,6 +568,13 @@ export class ProcurementRepository {
   }
 
   async findQuotes(storeId: string, supplierId?: string, productId?: string): Promise<StoredSupplierQuote[]> {
+    if (this.prisma) {
+      const rows = await this.prisma.supplierQuote.findMany({
+        where: { storeId, ...(supplierId ? { supplierId } : {}), ...(productId ? { items: { some: { productId } } } : {}) },
+        include: { items: true }, orderBy: { createdAt: 'desc' },
+      });
+      return rows.map((row) => this.toQuote(row));
+    }
     return Array.from(this.supplierQuotes.values())
       .filter(q => {
         if (q.storeId !== storeId) return false;
@@ -437,6 +586,10 @@ export class ProcurementRepository {
   }
 
   async findQuoteById(storeId: string, id: string): Promise<StoredSupplierQuote | null> {
+    if (this.prisma) {
+      const row = await this.prisma.supplierQuote.findFirst({ where: { id, storeId }, include: { items: true } });
+      return row ? this.toQuote(row) : null;
+    }
     const q = this.supplierQuotes.get(id);
     if (!q || q.storeId !== storeId) return null;
     return q;
@@ -463,6 +616,41 @@ export class ProcurementRepository {
       lineDiscount?: string;
     }>
   ): Promise<StoredPurchaseOrder> {
+    if (this.prisma) {
+      const id = randomUUID();
+      let subtotal = new Prisma.Decimal(0);
+      let discounts = new Prisma.Decimal(0);
+      const items = itemsData.map((item) => {
+        const packs = new Prisma.Decimal(item.quantityInPurchasePacks);
+        const unitsPerPack = new Prisma.Decimal(item.unitsPerPack);
+        const price = new Prisma.Decimal(item.unitPricePerPurchasePack);
+        const discount = new Prisma.Decimal(item.lineDiscount ?? '0');
+        const lineTotal = Prisma.Decimal.max(packs.times(price).minus(discount), 0);
+        subtotal = subtotal.plus(packs.times(price));
+        discounts = discounts.plus(discount);
+        return {
+          id: randomUUID(), productId: item.productId, productNameSnapshot: item.productName,
+          supplierSkuSnapshot: item.supplierSku ?? null,
+          orderedQuantityInPurchasePacks: packs.toFixed(3), purchaseUnitLabelSnapshot: item.purchaseUnitLabel,
+          unitsPerPackSnapshot: unitsPerPack.toFixed(3),
+          orderedQuantityInStockUnits: packs.times(unitsPerPack).toFixed(3),
+          unitPricePerPurchasePack: price.toFixed(2), lineDiscount: discount.toFixed(2),
+          lineTotal: lineTotal.toFixed(2), receivedQuantityInStockUnits: '0.000',
+        };
+      });
+      const row = await this.prisma.purchaseOrder.create({
+        data: {
+          id, storeId, orderNumber: `PO-${new Date().getUTCFullYear()}-${Date.now()}`,
+          supplierId, supplierName, supplierQuoteId, status: 'DRAFT', revision: 1,
+          currency: 'INR', subtotal: subtotal.toFixed(2), discountTotal: discounts.toFixed(2),
+          chargesTotal: '0.00', estimatedTotal: subtotal.minus(discounts).toFixed(2),
+          expectedDeliveryDate: expectedDeliveryDate ? new Date(expectedDeliveryDate) : null,
+          paymentTermsSnapshot: paymentTerms, notes, createdById,
+          items: { create: items },
+        }, include: { items: true },
+      });
+      return this.toPurchaseOrder(row);
+    }
     const id = `po_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
     const orderNumber = `PO-2026-${++this.orderCounter}`;
     const now = new Date().toISOString();
@@ -541,6 +729,13 @@ export class ProcurementRepository {
   }
 
   async findPurchaseOrders(storeId: string, status?: PurchaseOrderStatus, supplierId?: string): Promise<StoredPurchaseOrder[]> {
+    if (this.prisma) {
+      const rows = await this.prisma.purchaseOrder.findMany({
+        where: { storeId, ...(status ? { status } : {}), ...(supplierId ? { supplierId } : {}) },
+        include: { items: true }, orderBy: { createdAt: 'desc' },
+      });
+      return rows.map((row) => this.toPurchaseOrder(row));
+    }
     return Array.from(this.purchaseOrders.values())
       .filter(po => {
         if (po.storeId !== storeId) return false;
@@ -552,12 +747,48 @@ export class ProcurementRepository {
   }
 
   async findPurchaseOrderById(storeId: string, id: string): Promise<StoredPurchaseOrder | null> {
+    if (this.prisma) {
+      const row = await this.prisma.purchaseOrder.findFirst({ where: { storeId, id }, include: { items: true } });
+      return row ? this.toPurchaseOrder(row) : null;
+    }
     const po = this.purchaseOrders.get(id);
     if (!po || po.storeId !== storeId) return null;
     return po;
   }
 
   async updatePurchaseOrder(storeId: string, id: string, updates: Partial<StoredPurchaseOrder>): Promise<StoredPurchaseOrder | null> {
+    if (this.prisma) {
+      const { items, id: _id, storeId: _storeId, createdAt: _createdAt, updatedAt: _updatedAt,
+        subtotal, discountTotal, chargesTotal, estimatedTotal, expectedDeliveryDate, approvedAt,
+        submittedAt, acknowledgedAt, receivedAt, cancelledAt, ...fields } = updates;
+      const date = (value: string | null | undefined) => value === undefined ? undefined : value === null ? null : new Date(value);
+      const row = await this.prisma.$transaction(async (tx) => {
+        await tx.purchaseOrder.updateMany({
+          where: { storeId, id },
+          data: {
+            ...fields,
+            ...(subtotal !== undefined ? { subtotal } : {}),
+            ...(discountTotal !== undefined ? { discountTotal } : {}),
+            ...(chargesTotal !== undefined ? { chargesTotal } : {}),
+            ...(estimatedTotal !== undefined ? { estimatedTotal } : {}),
+            ...(expectedDeliveryDate !== undefined ? { expectedDeliveryDate: date(expectedDeliveryDate) } : {}),
+            ...(approvedAt !== undefined ? { approvedAt: date(approvedAt) } : {}),
+            ...(submittedAt !== undefined ? { submittedAt: date(submittedAt) } : {}),
+            ...(acknowledgedAt !== undefined ? { acknowledgedAt: date(acknowledgedAt) } : {}),
+            ...(receivedAt !== undefined ? { receivedAt: date(receivedAt) } : {}),
+            ...(cancelledAt !== undefined ? { cancelledAt: date(cancelledAt) } : {}),
+          },
+        });
+        if (items) for (const item of items) {
+          await tx.purchaseOrderItem.updateMany({
+            where: { id: item.id, purchaseOrderId: id },
+            data: { receivedQuantityInStockUnits: item.receivedQuantityInStockUnits },
+          });
+        }
+        return tx.purchaseOrder.findFirst({ where: { storeId, id }, include: { items: true } });
+      });
+      return row ? this.toPurchaseOrder(row) : null;
+    }
     const po = await this.findPurchaseOrderById(storeId, id);
     if (!po) return null;
     const updated: StoredPurchaseOrder = {
@@ -578,6 +809,15 @@ export class ProcurementRepository {
     deliveryNoteReference?: string,
     notes?: string
   ): Promise<StoredGoodsReceipt> {
+    if (this.prisma) {
+      const row = await this.prisma.goodsReceipt.create({
+        data: {
+          storeId, purchaseOrderId, receiptNumber: `GR-${new Date().getUTCFullYear()}-${Date.now()}`,
+          status: 'DRAFT', deliveryNoteReference: deliveryNoteReference ?? null, notes: notes ?? null,
+        }, include: { items: true },
+      });
+      return this.toGoodsReceipt(row);
+    }
     const id = `gr_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
     const receiptNumber = `GR-2026-${++this.receiptCounter}`;
     const now = new Date().toISOString();
@@ -604,18 +844,49 @@ export class ProcurementRepository {
   }
 
   async findGoodsReceiptById(storeId: string, id: string): Promise<StoredGoodsReceipt | null> {
+    if (this.prisma) {
+      const row = await this.prisma.goodsReceipt.findFirst({ where: { storeId, id }, include: { items: true } });
+      return row ? this.toGoodsReceipt(row) : null;
+    }
     const gr = this.goodsReceipts.get(id);
     if (!gr || gr.storeId !== storeId) return null;
     return gr;
   }
 
   async findGoodsReceiptsForPO(storeId: string, purchaseOrderId: string): Promise<StoredGoodsReceipt[]> {
+    if (this.prisma) {
+      const rows = await this.prisma.goodsReceipt.findMany({ where: { storeId, purchaseOrderId }, include: { items: true }, orderBy: { createdAt: 'asc' } });
+      return rows.map((row) => this.toGoodsReceipt(row));
+    }
     return Array.from(this.goodsReceipts.values()).filter(
       gr => gr.storeId === storeId && gr.purchaseOrderId === purchaseOrderId
     );
   }
 
   async updateGoodsReceipt(storeId: string, id: string, updates: Partial<StoredGoodsReceipt>): Promise<StoredGoodsReceipt | null> {
+    if (this.prisma) {
+      const { items, id: _id, storeId: _storeId, createdAt: _createdAt, updatedAt: _updatedAt,
+        purchaseOrderId: _purchaseOrderId, receiptNumber: _receiptNumber,
+        deliveredAt, verifiedAt, ...fields } = updates;
+      const date = (value: string | null | undefined) => value === undefined ? undefined : value === null ? null : new Date(value);
+      const row = await this.prisma.$transaction(async (tx) => {
+        await tx.goodsReceipt.updateMany({
+          where: { storeId, id },
+          data: { ...fields,
+            ...(deliveredAt !== undefined && deliveredAt !== null ? { deliveredAt: new Date(deliveredAt) } : {}),
+            ...(verifiedAt !== undefined ? { verifiedAt: date(verifiedAt) } : {}),
+          },
+        });
+        if (items) {
+          await tx.goodsReceiptItem.deleteMany({ where: { goodsReceiptId: id } });
+          if (items.length) await tx.goodsReceiptItem.createMany({ data: items.map((item) => ({
+            ...item, goodsReceiptId: id,
+          })) });
+        }
+        return tx.goodsReceipt.findFirst({ where: { storeId, id }, include: { items: true } });
+      });
+      return row ? this.toGoodsReceipt(row) : null;
+    }
     const gr = await this.findGoodsReceiptById(storeId, id);
     if (!gr) return null;
     const updated: StoredGoodsReceipt = {
@@ -631,6 +902,17 @@ export class ProcurementRepository {
 
   // Invoices
   async attachInvoice(storeId: string, purchaseOrderId: string, input: AttachInvoiceInput): Promise<StoredInvoiceAttachment> {
+    if (this.prisma) {
+      const row = await this.prisma.purchaseInvoice.create({
+        data: {
+          storeId, purchaseOrderId, invoiceNumber: input.invoiceNumber,
+          invoiceDate: new Date(input.invoiceDate), totalInvoicedAmount: input.totalInvoicedAmount,
+          fileReference: input.fileReference ?? null, notes: input.notes ?? null,
+          items: { create: (input.lineItems ?? []).map((item) => ({ ...item })) },
+        }, include: { items: true },
+      });
+      return this.toInvoice(row);
+    }
     const id = `inv_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
     const inv: StoredInvoiceAttachment = {
       id,
@@ -649,6 +931,10 @@ export class ProcurementRepository {
   }
 
   async findInvoicesForPO(storeId: string, purchaseOrderId: string): Promise<StoredInvoiceAttachment[]> {
+    if (this.prisma) {
+      const rows = await this.prisma.purchaseInvoice.findMany({ where: { storeId, purchaseOrderId }, include: { items: true }, orderBy: { createdAt: 'desc' } });
+      return rows.map((row) => this.toInvoice(row));
+    }
     return Array.from(this.invoices.values()).filter(
       inv => inv.storeId === storeId && inv.purchaseOrderId === purchaseOrderId
     );

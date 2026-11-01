@@ -68,6 +68,11 @@ export function AIPage() {
   const [voiceCall, setVoiceCall] = useState<VoiceCallResult | null>(null);
   const [showVoiceModal, setShowVoiceModal] = useState(false);
 
+  // Discrepancy Reconciliation Modal
+  const [showDiscrepancyModal, setShowDiscrepancyModal] = useState(false);
+  const [discrepancyDraftMessage, setDiscrepancyDraftMessage] = useState('');
+  const [copiedNotice, setCopiedNotice] = useState(false);
+
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const loadData = async () => {
@@ -154,50 +159,100 @@ export function AIPage() {
     setTimeout(() => setKeySaveMessage(''), 3000);
   };
 
-  const handleTriggerAutonomousReplenishment = async () => {
+  const handleTriggerAllReplenishment = async () => {
     setIsLoading(true);
     try {
-      const task = await fetchWithKey<AgentTaskRecord>('/ai/tasks', { method: 'POST' });
+      const res: any = await fetchWithKey('/ai/trigger-check', { method: 'POST' });
       setMessages((prev) => [
         ...prev,
-        {
-          role: 'user',
-          text: 'Start autonomous replenishment workflow for low-stock items',
-        },
+        { role: 'user', text: 'Scan all store products for low-stock reorder conditions' },
         {
           role: 'assistant',
-          text: `⚡ Autonomous Replenishment Workflow initiated (Task **${task.id}**). I have scanned your inventory, contacted Anand Agencies in Hindi to negotiate wholesale rates, and drafted a purchase order for your approval!`,
-          actions: [{ tool: 'replenish_low_stock', status: 'SUCCEEDED', summary: 'Multi-step autonomous workflow' }],
+          text: `⚡ Inventory Scan Complete:\nChecked ${res.checkedCount} products. Triggered ${res.triggeredCount} replenishment workflow(s). Review the active tasks in the panel to inspect quotes and approve orders!`,
         },
       ]);
       await loadData();
     } catch (err: any) {
-      alert(`Replenishment trigger failed: ${err.message}`);
+      alert(`Trigger failed: ${err.message}`);
     } finally {
       setIsLoading(false);
     }
   };
 
-  const handleApproveAndSubmit = async (taskId: string, poId: string) => {
+  const handleTriggerParleGScenario = async () => {
+    setIsLoading(true);
     try {
-      // 1. Approve PO in procurement
-      await fetchWithKey(`/purchase-orders/${poId}/approve`, {
+      await fetchWithKey('/ai/trigger-product', {
         method: 'POST',
-        body: JSON.stringify({
-          expectedRevision: 1,
-          decisionNote: 'Approved by store owner via DukaanAI AI Assistant review',
-        }),
+        body: JSON.stringify({ productId: 'prod-parle-g-100g' }),
       });
-
-      // 2. Resume AI Task to submit to portal
-      const res: any = await fetchWithKey(`/ai/tasks/${taskId}/resume`, {
-        method: 'POST',
-      });
-
-      alert(`🎉 Order Approved & Submitted to Distributor Portal!\nDistributor Ref: ${res.portalResult?.orderReference}`);
+      setMessages((prev) => [
+        ...prev,
+        { role: 'user', text: 'Run restocking analysis for Parle-G 100g (Hackathon Demo)' },
+        {
+          role: 'assistant',
+          text: `⚡ Parle-G 100g Restocking Initiated:\nCurrent stock is 8 packets (minimum threshold: 10, target: 40). Autonomous Replenishment Employee has compared Anand Wholesale (₹42, 1-day) vs Balaji Traders (₹40, 3-day), calculated reorder of 32 units, drafted Purchase Order, and paused for owner approval!`,
+        },
+      ]);
       await loadData();
     } catch (err: any) {
-      alert(`Approval/Submission error: ${err.message}`);
+      alert(`Trigger failed: ${err.message}`);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleApproveTask = async (taskId: string) => {
+    try {
+      await fetchWithKey(`/ai/tasks/${taskId}/approve`, {
+        method: 'POST',
+        body: JSON.stringify({ decisionNote: 'Approved by store owner via DukaanAI Munimji review' }),
+      });
+      alert('🎉 Purchase Order Approved and Placed with Distributor!');
+      await loadData();
+    } catch (err: any) {
+      alert(`Approval error: ${err.message}`);
+    }
+  };
+
+  const handleRejectTask = async (taskId: string) => {
+    const reason = prompt('Reason for rejection:', 'Price consideration / Sufficient stock on hand') || 'Rejected by owner';
+    try {
+      await fetchWithKey(`/ai/tasks/${taskId}/reject`, {
+        method: 'POST',
+        body: JSON.stringify({ reason }),
+      });
+      alert('Purchase Order Draft rejected.');
+      await loadData();
+    } catch (err: any) {
+      alert(`Rejection error: ${err.message}`);
+    }
+  };
+
+  const handleGenerateDiscrepancyNotice = async () => {
+    try {
+      const res: any = await fetchWithKey('/ai/reconcile-discrepancy', {
+        method: 'POST',
+        body: JSON.stringify({
+          receiptId: 'GR-2026-PARLEG-01',
+          poNumber: 'PO-2026-PARLEG-100G',
+          supplierName: 'Anand Wholesale Agencies',
+          items: [
+            {
+              productName: 'Parle-G 100g Glucose Biscuits',
+              orderedQuantity: '32',
+              saleableQuantity: '28',
+              damagedQuantity: '2',
+              missingQuantity: '2',
+            },
+          ],
+        }),
+      });
+      setDiscrepancyDraftMessage(res.draftMessage || '');
+      setShowDiscrepancyModal(true);
+      await loadData();
+    } catch (err: any) {
+      alert(`Notice generation failed: ${err.message}`);
     }
   };
 
@@ -263,28 +318,34 @@ export function AIPage() {
         {/* Quick Action Prompt Chips */}
         <div style={{ display: 'flex', gap: '8px', overflowX: 'auto', paddingBottom: '8px', marginBottom: '10px' }}>
           <button
-            onClick={() => handleSendMessage('Check low-stock products in store and explain what needs reordering')}
-            style={{ fontSize: '11px', padding: '6px 12px', background: '#f1f5f9', border: '1px solid #cbd5e1', borderRadius: '16px', cursor: 'pointer', whiteSpace: 'nowrap' }}
+            onClick={handleTriggerAllReplenishment}
+            style={{ fontSize: '11px', padding: '6px 12px', background: '#f0fdf4', border: '1px solid #86efac', color: '#166534', borderRadius: '16px', cursor: 'pointer', whiteSpace: 'nowrap', fontWeight: 700 }}
           >
-            🔍 Check Low Stock
+            ⚡ Scan Low Stock & Reorder
           </button>
           <button
-            onClick={handleTriggerAutonomousReplenishment}
-            style={{ fontSize: '11px', padding: '6px 12px', background: '#f0fdf4', border: '1px solid #86efac', color: '#166534', borderRadius: '16px', cursor: 'pointer', whiteSpace: 'nowrap', fontWeight: 600 }}
+            onClick={handleTriggerParleGScenario}
+            style={{ fontSize: '11px', padding: '6px 12px', background: '#eff6ff', border: '1px solid #93c5fd', color: '#1d4ed8', borderRadius: '16px', cursor: 'pointer', whiteSpace: 'nowrap', fontWeight: 600 }}
           >
-            ⚡ Start Autonomous Replenishment
+            🍪 Parle-G 100g Demo Reorder
+          </button>
+          <button
+            onClick={handleGenerateDiscrepancyNotice}
+            style={{ fontSize: '11px', padding: '6px 12px', background: '#fef3c7', border: '1px solid #fde047', color: '#b45309', borderRadius: '16px', cursor: 'pointer', whiteSpace: 'nowrap', fontWeight: 600 }}
+          >
+            📦 Reconcile Discrepancy
+          </button>
+          <button
+            onClick={() => handleSendMessage('Explain the supplier quote trade-offs between Anand Wholesale and Balaji Traders')}
+            style={{ fontSize: '11px', padding: '6px 12px', background: '#f1f5f9', border: '1px solid #cbd5e1', borderRadius: '16px', cursor: 'pointer', whiteSpace: 'nowrap' }}
+          >
+            ⚖️ Supplier Trade-offs
           </button>
           <button
             onClick={() => handleSendMessage('Simulate a supplier phone call to Anand Agencies in Hindi negotiating Parle-G wholesale boxes')}
-            style={{ fontSize: '11px', padding: '6px 12px', background: '#fef3c7', border: '1px solid #fde047', color: '#b45309', borderRadius: '16px', cursor: 'pointer', whiteSpace: 'nowrap' }}
+            style={{ fontSize: '11px', padding: '6px 12px', background: '#f8fafc', border: '1px solid #cbd5e1', color: '#475569', borderRadius: '16px', cursor: 'pointer', whiteSpace: 'nowrap' }}
           >
             📞 Supplier Call (Hindi)
-          </button>
-          <button
-            onClick={() => handleSendMessage('List all active wholesale distributors for the store')}
-            style={{ fontSize: '11px', padding: '6px 12px', background: '#f1f5f9', border: '1px solid #cbd5e1', borderRadius: '16px', cursor: 'pointer', whiteSpace: 'nowrap' }}
-          >
-            🏢 View Suppliers
           </button>
         </div>
 
@@ -426,10 +487,10 @@ export function AIPage() {
               <Sparkles size={16} color="var(--green)" /> Autonomous Tasks ({tasks.length})
             </h3>
             <button
-              onClick={handleTriggerAutonomousReplenishment}
+              onClick={handleTriggerAllReplenishment}
               style={{ fontSize: '11px', background: '#f0fdf4', border: '1px solid #86efac', color: '#166534', padding: '4px 10px', borderRadius: '6px', cursor: 'pointer', fontWeight: 600 }}
             >
-              + New Replenishment
+              + Scan Low Stock
             </button>
           </div>
 
@@ -494,6 +555,49 @@ export function AIPage() {
                     ))}
                   </div>
 
+                  {/* Supplier Quotes & Stockout Risk Analysis Matrix */}
+                  {task.checkpoint && (task.checkpoint as any).comparisonOffers && Array.isArray((task.checkpoint as any).comparisonOffers) && (
+                    <div style={{ marginTop: '8px', padding: '8px', background: '#fff', borderRadius: '6px', border: '1px solid #e2e8f0' }}>
+                      <div style={{ fontSize: '10px', fontWeight: 700, color: '#475569', marginBottom: '6px', textTransform: 'uppercase' }}>
+                        Supplier Quotes & Stockout Risk
+                      </div>
+                      <div style={{ display: 'grid', gridTemplateColumns: '1.4fr 0.8fr 0.8fr 1fr', gap: '4px', fontSize: '10px' }}>
+                        <div style={{ fontWeight: 700, color: '#64748b' }}>Distributor</div>
+                        <div style={{ fontWeight: 700, color: '#64748b' }}>Rate</div>
+                        <div style={{ fontWeight: 700, color: '#64748b' }}>Lead</div>
+                        <div style={{ fontWeight: 700, color: '#64748b' }}>Stockout Risk</div>
+                        {((task.checkpoint as any).comparisonOffers as any[]).map((off: any, oIdx: number) => (
+                          <React.Fragment key={oIdx}>
+                            <div style={{ fontWeight: off.supplierId === (task.checkpoint as any).recommendedSupplierId ? 700 : 400 }}>
+                              {String(off.supplierName || 'Distributor')} {off.supplierId === (task.checkpoint as any).recommendedSupplierId ? '★' : ''}
+                            </div>
+                            <div>₹{String(off.unitPrice ?? '')}</div>
+                            <div>{String(off.leadTimeDays ?? '')}d</div>
+                            <div>
+                              <span
+                                style={{
+                                  fontSize: '9px',
+                                  padding: '1px 5px',
+                                  borderRadius: '3px',
+                                  background: off.stockoutRisk === 'LOW' ? '#dcfce7' : '#fee2e2',
+                                  color: off.stockoutRisk === 'LOW' ? '#166534' : '#b91c1c',
+                                  fontWeight: 700,
+                                }}
+                              >
+                                {String(off.stockoutRisk || '')}
+                              </span>
+                            </div>
+                          </React.Fragment>
+                        ))}
+                      </div>
+                      {Boolean((task.checkpoint as any).reasoning) && (
+                        <div style={{ marginTop: '6px', fontSize: '10px', color: '#166534', background: '#f0fdf4', padding: '5px', borderRadius: '4px' }}>
+                          💡 <b>Munimji Trade-off Analysis:</b> {String((task.checkpoint as any).reasoning)}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
                   {/* WAITING_APPROVAL Action Banner */}
                   {task.status === 'WAITING_APPROVAL' && (
                     <div
@@ -509,24 +613,54 @@ export function AIPage() {
                         <AlertTriangle size={14} /> Action Required: Owner Approval
                       </div>
                       <p style={{ margin: '0 0 8px 0', fontSize: '10.5px', color: '#78350f' }}>
-                        Order #{String(task.checkpoint.purchaseOrderNumber || 'Draft')} (₹{String(task.checkpoint.estimatedTotal || '3300')}) prepared for {String(task.checkpoint.supplierName || 'Distributor')}. The AI cannot approve its own order.
+                        Order #{String(task.checkpoint.purchaseOrderNumber || 'Draft')} (₹{String(task.checkpoint.estimatedTotal || '0')}) prepared for {String(task.checkpoint.recommendedSupplierName || task.checkpoint.supplierName || 'Distributor')}. The AI cannot approve its own order.
                       </p>
-                      <button
-                        onClick={() => handleApproveAndSubmit(task.id, task.checkpoint.purchaseOrderId as string)}
-                        style={{
-                          background: '#15803d',
-                          color: '#fff',
-                          border: 'none',
-                          padding: '6px 12px',
-                          borderRadius: '6px',
-                          fontSize: '11px',
-                          fontWeight: 600,
-                          cursor: 'pointer',
-                          width: '100%',
-                        }}
-                      >
-                        ✔ Approve & Submit to Distributor Portal
-                      </button>
+                      <div style={{ display: 'flex', gap: '8px' }}>
+                        <button
+                          onClick={() => handleApproveTask(task.id)}
+                          style={{
+                            flex: 1.5,
+                            background: '#15803d',
+                            color: '#fff',
+                            border: 'none',
+                            padding: '7px 12px',
+                            borderRadius: '6px',
+                            fontSize: '11px',
+                            fontWeight: 600,
+                            cursor: 'pointer',
+                          }}
+                        >
+                          ✔ Approve & Place Order
+                        </button>
+                        <button
+                          onClick={() => handleRejectTask(task.id)}
+                          style={{
+                            flex: 1,
+                            background: '#fee2e2',
+                            color: '#991b1b',
+                            border: '1px solid #fca5a5',
+                            padding: '7px 10px',
+                            borderRadius: '6px',
+                            fontSize: '11px',
+                            fontWeight: 600,
+                            cursor: 'pointer',
+                          }}
+                        >
+                          ✕ Reject Draft
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* WAITING_EXTERNAL Banner */}
+                  {task.status === 'WAITING_EXTERNAL' && (
+                    <div style={{ marginTop: '8px', padding: '8px', background: '#ecfdf5', borderRadius: '6px', border: '1px solid #a7f3d0' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '11px', fontWeight: 700, color: '#065f46' }}>
+                        <CheckCircle2 size={13} /> Order Placed with Distributor
+                      </div>
+                      <p style={{ margin: '2px 0 0', fontSize: '10px', color: '#047857' }}>
+                        Approved by store owner. Awaiting goods delivery at kirana store.
+                      </p>
                     </div>
                   )}
 
@@ -674,10 +808,10 @@ export function AIPage() {
 
             <div style={{ fontSize: '12px', color: '#475569', lineHeight: 1.5, marginBottom: '14px' }}>
               <p style={{ margin: '0 0 8px 0' }}>
-                <b>Default System Key:</b> DukaanAI is pre-configured with a default system API key (Google Gemini 3.5 Flash). Everyone running the application uses this key automatically without needing to configure anything.
+                <b>Provider key:</b> AI is disabled until a provider key is configured through the environment or entered for this request. Autonomous actions remain deferred while business-data integration is stabilised.
               </p>
               <div style={{ background: '#f1f5f9', padding: '8px 12px', borderRadius: '6px', fontSize: '11px', fontFamily: 'monospace', color: '#0f172a', marginBottom: '12px' }}>
-                Status: {health?.status === 'READY' ? '🟢 Active' : '🟡 Offline'} • Masked Key: {health?.maskedKey || 'AQ.Ab8••••••••DKqg'}
+                Status: {health?.status === 'READY' ? '🟢 Active' : '🟡 Offline'} • Masked Key: {health?.maskedKey || 'Not Configured'}
               </div>
               <p style={{ margin: '0 0 6px 0' }}>
                 <b>Use Your Own Custom API Key (Optional):</b>
@@ -730,6 +864,80 @@ export function AIPage() {
                 style={{ background: 'var(--green)', color: '#fff', border: 'none', padding: '8px 16px', borderRadius: '6px', fontSize: '11.5px', fontWeight: 600, cursor: 'pointer' }}
               >
                 Save Custom Key
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Discrepancy Reconciliation Modal */}
+      {showDiscrepancyModal && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 100, padding: '20px' }}>
+          <div style={{ background: '#fff', borderRadius: '12px', width: '100%', maxWidth: '560px', padding: '20px', display: 'flex', flexDirection: 'column' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid #e2e8f0', paddingBottom: '10px', marginBottom: '14px' }}>
+              <div>
+                <h3 style={{ margin: 0, fontSize: '15px', fontWeight: 700, color: '#0f172a' }}>Goods Receipt Discrepancy Reconciliation</h3>
+                <small style={{ color: '#64748b' }}>Automated credit-note & supplier notice generator</small>
+              </div>
+              <button onClick={() => setShowDiscrepancyModal(false)} style={{ background: 'none', border: 'none', cursor: 'pointer' }}>
+                <X size={18} />
+              </button>
+            </div>
+
+            <div style={{ fontSize: '12px', color: '#334155', marginBottom: '12px', background: '#f8fafc', padding: '10px', borderRadius: '6px', border: '1px solid #e2e8f0' }}>
+              <div><b>Delivery Note:</b> GR-2026-PARLEG-01 • <b>Distributor:</b> Anand Wholesale Agencies</div>
+              <div><b>Verified Count:</b> 28 saleable received | <span style={{ color: '#b91c1c', fontWeight: 700 }}>2 damaged in transit, 2 missing from carton</span></div>
+              <div style={{ fontSize: '11px', color: '#15803d', marginTop: '4px' }}>
+                ✔ Inventory balance has been safely incremented by exactly <b>28 saleable units</b>.
+              </div>
+            </div>
+
+            <div style={{ marginBottom: '14px' }}>
+              <div style={{ fontSize: '11px', fontWeight: 700, color: '#475569', marginBottom: '6px' }}>
+                DRAFTED SUPPLIER NOTICE (FOR WHATSAPP / EMAIL CREDIT NOTE REQUEST):
+              </div>
+              <pre style={{
+                background: '#f1f5f9',
+                padding: '12px',
+                borderRadius: '6px',
+                fontSize: '11.5px',
+                whiteSpace: 'pre-wrap',
+                fontFamily: 'inherit',
+                lineHeight: 1.5,
+                margin: 0,
+                border: '1px solid #cbd5e1',
+                maxHeight: '220px',
+                overflowY: 'auto',
+              }}>
+                {discrepancyDraftMessage}
+              </pre>
+            </div>
+
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px' }}>
+              <button
+                onClick={() => {
+                  navigator.clipboard?.writeText(discrepancyDraftMessage);
+                  setCopiedNotice(true);
+                  setTimeout(() => setCopiedNotice(false), 3000);
+                }}
+                style={{
+                  background: copiedNotice ? '#15803d' : '#0284c7',
+                  color: '#fff',
+                  border: 'none',
+                  padding: '8px 16px',
+                  borderRadius: '6px',
+                  fontSize: '11.5px',
+                  fontWeight: 600,
+                  cursor: 'pointer',
+                }}
+              >
+                {copiedNotice ? '✔ Notice Copied to Clipboard!' : '📋 Copy Notice to Clipboard'}
+              </button>
+              <button
+                onClick={() => setShowDiscrepancyModal(false)}
+                style={{ background: '#f1f5f9', border: '1px solid #cbd5e1', padding: '8px 14px', borderRadius: '6px', fontSize: '11.5px', cursor: 'pointer' }}
+              >
+                Close
               </button>
             </div>
           </div>

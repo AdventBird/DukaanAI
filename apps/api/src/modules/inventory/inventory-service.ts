@@ -22,6 +22,35 @@ export interface InventoryDomainService {
   getStockBalance(storeId: string, productId: string): Promise<string>;
 }
 
+export function createPrismaInventoryDomainService(
+  prisma: import('@prisma/client').PrismaClient,
+  inventory: import('./inventory.service.js').InventoryService,
+): InventoryDomainService {
+  return {
+    async receiveVerifiedGoods(_ignored, input) {
+      return prisma.$transaction(async (tx) => {
+        const duplicate = await tx.stockMovement.findUnique({ where: { idempotencyKey: input.idempotencyKey } });
+        const result = await inventory.receiveVerifiedGoods(tx, input);
+        const balance = await tx.inventoryBalance.findUnique({
+          where: { storeId_productId: { storeId: input.storeId, productId: input.productId } },
+        });
+        if (!balance) throw new Error('Inventory balance was not created for the received product.');
+        return {
+          success: true,
+          productId: input.productId,
+          newBalance: balance.quantityOnHand.toString(),
+          movementId: result.movementId,
+          isDuplicate: Boolean(duplicate),
+        };
+      });
+    },
+    async getStockBalance(storeId, productId) {
+      const balance = await prisma.inventoryBalance.findUnique({ where: { storeId_productId: { storeId, productId } } });
+      return balance?.quantityOnHand.toString() ?? '0.000';
+    },
+  };
+}
+
 /**
  * Dev 1 Domain Service Adapter & In-Memory Test Double.
  * Ensures strict atomicity, prevents duplicate stock movements,

@@ -79,16 +79,14 @@ export class BrowserPortalAdapter {
         diagnostics: `Simulated browser agent authenticated as '${credentials.username}' and submitted PO '${input.poNumber}' via [data-testid="purchase-order-submit"].`,
       };
     } catch (err: any) {
-      // Offline fallback: if mock portal server is not actively running during tests/demo, generate deterministic acknowledgment
-      const fallbackRef = `DIST-ORD-${Date.now().toString().slice(-6)}`;
       return {
-        success: true,
-        orderReference: fallbackRef,
-        status: 'ACKNOWLEDGED',
+        success: false,
+        orderReference: '',
+        status: 'FAILED',
         supplierId: input.supplierId,
         poNumber: input.poNumber,
         submittedAt: now,
-        diagnostics: `Offline portal client acknowledged order ${fallbackRef} for PO ${input.poNumber} (${err.message})`,
+        diagnostics: `Mock portal submission failed for PO ${input.poNumber}: ${err.message}`,
       };
     }
   }

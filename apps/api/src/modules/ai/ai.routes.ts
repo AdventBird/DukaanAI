@@ -11,10 +11,15 @@ import { taskService } from './task.service.js';
 import { demoVoiceProvider } from './adapters/voice.adapter.js';
 import { browserPortalAdapter } from './adapters/browser.adapter.js';
 import { procurementService } from '../procurement/procurement.service.js';
+import { ReplenishmentTriggerService } from './replenishment-trigger.service.js';
+import { replenishmentAgent } from './replenishment.agent.js';
 
 export function createAIRouter(prisma: PrismaClient): Router {
   const router = Router();
   const aiService = new AIService(prisma);
+  const triggerService = new ReplenishmentTriggerService(prisma);
+  taskService.setPrisma(prisma);
+  replenishmentAgent.setPrisma(prisma);
 
   // Helper to extract custom API key from header or body
   const getCustomKey = (req: Request): string | undefined => {
@@ -86,21 +91,186 @@ export function createAIRouter(prisma: PrismaClient): Router {
   });
 
   // GET /api/ai/tasks
-  router.get('/tasks', (req: Request, res: Response) => {
+  router.get('/tasks', async (req: Request, res: Response) => {
     if (!req.auth) return res.status(401).json(errorEnvelope('UNAUTHENTICATED', 'Auth required', res.locals.requestId));
     const status = req.query.status as any;
-    const tasks = taskService.listTasks(req.auth.storeId, status);
+    const tasks = await taskService.listTasksAsync(req.auth.storeId, status);
     res.json(successEnvelope(tasks, res.locals.requestId));
   });
 
   // GET /api/ai/tasks/:id
-  router.get('/tasks/:id', (req: Request, res: Response) => {
+  router.get('/tasks/:id', async (req: Request, res: Response) => {
     if (!req.auth) return res.status(401).json(errorEnvelope('UNAUTHENTICATED', 'Auth required', res.locals.requestId));
-    const task = taskService.getTask(String(req.params.id));
+    const task = await taskService.getTaskAsync(String(req.params.id));
     if (!task || task.storeId !== req.auth.storeId) {
       return res.status(404).json(errorEnvelope('NOT_FOUND', 'Task not found.', res.locals.requestId));
     }
     res.json(successEnvelope(task, res.locals.requestId));
+  });
+
+  // POST /api/ai/trigger-check (Reconcile & trigger reorder for all low-stock items)
+  router.post('/trigger-check', async (req: Request, res: Response) => {
+    if (!req.auth) return res.status(401).json(errorEnvelope('UNAUTHENTICATED', 'Auth required', res.locals.requestId));
+    try {
+      const results = await triggerService.reconcileAllLowStockProducts(req.auth.storeId);
+      res.json(successEnvelope({ checkedCount: results.length, evaluations: results }, res.locals.requestId));
+    } catch (err: any) {
+      res.status(500).json(errorEnvelope('TRIGGER_FAILED', err.message, res.locals.requestId));
+    }
+  });
+
+  // POST /api/ai/trigger-product (Trigger reorder evaluation for a specific product)
+  router.post('/trigger-product', async (req: Request, res: Response) => {
+    if (!req.auth) return res.status(401).json(errorEnvelope('UNAUTHENTICATED', 'Auth required', res.locals.requestId));
+    const { productId } = req.body;
+    if (!productId) return res.status(400).json(errorEnvelope('VALIDATION_ERROR', 'productId is required', res.locals.requestId));
+
+    try {
+      const result = await triggerService.evaluateProductReorder(req.auth.storeId, String(productId), {
+        triggerSource: 'MANUAL_DASHBOARD_TRIGGER',
+        actorId: req.auth.userId,
+        autoExecute: true,
+      });
+      res.json(successEnvelope(result, res.locals.requestId));
+    } catch (err: any) {
+      res.status(500).json(errorEnvelope('TRIGGER_FAILED', err.message, res.locals.requestId));
+    }
+  });
+
+  // POST /api/ai/tasks/:id/approve (Store owner approves purchase order commitment)
+  router.post('/tasks/:id/approve', async (req: Request, res: Response) => {
+    if (!req.auth) return res.status(401).json(errorEnvelope('UNAUTHENTICATED', 'Auth required', res.locals.requestId));
+    if (req.auth.role !== 'OWNER') {
+      return res.status(403).json(errorEnvelope('FORBIDDEN', 'Only a verified store OWNER can authorize purchase commitments.', res.locals.requestId));
+    }
+
+    const task = await taskService.getTaskAsync(String(req.params.id));
+    if (!task || task.storeId !== req.auth.storeId) {
+      return res.status(404).json(errorEnvelope('NOT_FOUND', 'Task not found.', res.locals.requestId));
+    }
+
+    const poId = task.checkpoint.purchaseOrderId as string;
+    if (!poId) {
+      return res.status(400).json(errorEnvelope('INVALID_STATE', 'Task has no linked purchase order to approve.', res.locals.requestId));
+    }
+
+    try {
+      const approvedPo = await procurementService.approvePurchaseOrder(
+        req.auth.storeId,
+        poId,
+        req.auth.userId,
+        req.auth.role,
+        {
+          expectedRevision: 1,
+          decisionNote: req.body?.notes || 'Approved by Kirana store owner via DukaanAI Restocking Employee.',
+        }
+      );
+
+      taskService.advanceStep(
+        task.id,
+        4,
+        'COMPLETED',
+        `Approved by Kirana Store Owner (${req.auth.userId}). Purchase Order ${approvedPo.orderNumber} is APPROVED and ready to be placed with distributor.`
+      );
+
+      taskService.updateTaskStatus(task.id, 'WAITING_EXTERNAL', undefined, {
+        approvedAt: new Date().toISOString(),
+        approvedById: req.auth.userId,
+        poStatus: approvedPo.status,
+      });
+
+      res.json(successEnvelope({ task, purchaseOrder: approvedPo }, res.locals.requestId));
+    } catch (err: any) {
+      res.status(400).json(errorEnvelope('APPROVAL_FAILED', err.message, res.locals.requestId));
+    }
+  });
+
+  // POST /api/ai/tasks/:id/reject (Store owner rejects purchase order draft)
+  router.post('/tasks/:id/reject', async (req: Request, res: Response) => {
+    if (!req.auth) return res.status(401).json(errorEnvelope('UNAUTHENTICATED', 'Auth required', res.locals.requestId));
+    if (req.auth.role !== 'OWNER') {
+      return res.status(403).json(errorEnvelope('FORBIDDEN', 'Only the store OWNER can reject purchase orders.', res.locals.requestId));
+    }
+
+    const task = await taskService.getTaskAsync(String(req.params.id));
+    if (!task || task.storeId !== req.auth.storeId) {
+      return res.status(404).json(errorEnvelope('NOT_FOUND', 'Task not found.', res.locals.requestId));
+    }
+
+    const poId = task.checkpoint.purchaseOrderId as string;
+    const reason = req.body?.reason || 'Draft rejected by store owner';
+
+    if (poId) {
+      try {
+        await procurementService.rejectPurchaseOrder(
+          req.auth.storeId,
+          poId,
+          req.auth.userId,
+          req.auth.role,
+          {
+            expectedRevision: 1,
+            reason,
+          }
+        );
+      } catch {
+        // Continue task cancellation even if PO was already updated
+      }
+    }
+
+    taskService.cancelTask(task.id, reason);
+    res.json(successEnvelope({ taskId: task.id, status: 'CANCELLED', reason }, res.locals.requestId));
+  });
+
+  // POST /api/ai/reconcile-discrepancy (Generate supplier discrepancy report and credit-note follow-up message)
+  router.post('/reconcile-discrepancy', async (req: Request, res: Response) => {
+    if (!req.auth) return res.status(401).json(errorEnvelope('UNAUTHENTICATED', 'Auth required', res.locals.requestId));
+    const { receiptId, poNumber, supplierName, items } = req.body;
+
+    const discrepancyLines = (items || []).filter(
+      (it: any) => Number(it.damagedQuantity || 0) > 0 || Number(it.missingQuantity || 0) > 0
+    );
+
+    const summaryText = discrepancyLines
+      .map(
+        (it: any) =>
+          `• ${it.productName}: Ordered ${it.orderedQuantity}, Received ${it.saleableQuantity} saleable (${it.damagedQuantity || 0} damaged, ${it.missingQuantity || 0} missing)`
+      )
+      .join('\n');
+
+    const draftMessage =
+      `Namaste ${supplierName || 'Distributor'},\n\n` +
+      `Regarding delivery for Order #${poNumber || receiptId || 'PO-RECENT'}:\n` +
+      `During physical receiving count at Shree Ganesh Kirana Store, our verification detected the following discrepancies:\n\n` +
+      `${summaryText}\n\n` +
+      `Only verified saleable stock has been accepted into inventory. Kindly issue a credit note for the damaged/missing units or dispatch replacements with your next delivery vehicle.\n\n` +
+      `Thank you,\nStore Owner`;
+
+    // Create durable follow-up task
+    const followUpTask = taskService.createTask({
+      storeId: req.auth.storeId,
+      taskType: 'SUPPLIER_FOLLOW_UP',
+      inputSummary: `Discrepancy reconciliation for PO ${poNumber || receiptId}: ${discrepancyLines.length} line(s) short/damaged`,
+      relatedEntityType: 'GOODS_RECEIPT',
+      relatedEntityId: receiptId,
+      steps: [
+        { name: 'Audit Physical Count vs PO Invoice', toolName: 'audit_goods_receipt' },
+        { name: 'Generate Supplier Discrepancy Notice', toolName: 'draft_supplier_notice' },
+        { name: 'Await Owner Dispatch Authorization', toolName: 'owner_review' },
+      ],
+      initialCheckpoint: {
+        receiptId,
+        poNumber,
+        supplierName,
+        discrepancyLines,
+        draftMessage,
+      },
+    });
+
+    taskService.advanceStep(followUpTask.id, 0, 'COMPLETED', `Audited ${discrepancyLines.length} discrepancy lines.`);
+    taskService.advanceStep(followUpTask.id, 1, 'COMPLETED', 'Generated formal credit note inquiry for distributor.');
+    taskService.updateTaskStatus(followUpTask.id, 'WAITING_APPROVAL', undefined, { draftMessage });
+
+    res.json(successEnvelope({ task: followUpTask, draftMessage }, res.locals.requestId));
   });
 
   // POST /api/ai/tasks
@@ -113,6 +283,10 @@ export function createAIRouter(prisma: PrismaClient): Router {
   // POST /api/ai/tasks/:id/cancel
   router.post('/tasks/:id/cancel', (req: Request, res: Response) => {
     if (!req.auth) return res.status(401).json(errorEnvelope('UNAUTHENTICATED', 'Auth required', res.locals.requestId));
+    const existing = taskService.getTask(String(req.params.id));
+    if (!existing || existing.storeId !== req.auth.storeId) {
+      return res.status(404).json(errorEnvelope('NOT_FOUND', 'Task not found.', res.locals.requestId));
+    }
     try {
       const task = taskService.cancelTask(String(req.params.id), req.body?.reason);
       res.json(successEnvelope(task, res.locals.requestId));

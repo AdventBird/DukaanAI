@@ -9,8 +9,9 @@ try {
 import cors from 'cors';
 import express, { type ErrorRequestHandler, type Request, type Response } from 'express';
 import { randomUUID } from 'node:crypto';
+import { pathToFileURL } from 'node:url';
 import { PrismaClient } from '@prisma/client';
-import { createExpenseSchema, errorEnvelope, successEnvelope, type AuthContext } from '@dukaanai/shared';
+import { createExpenseSchema, errorEnvelope, successEnvelope } from '@dukaanai/shared';
 
 // Domain modules (Dev 1: Products & Inventory)
 import { createProductRouter } from './modules/products/product.routes.js';
@@ -23,16 +24,25 @@ import { SalesService } from './modules/sales/sales.service.js';
 
 // Domain modules (Dev 3: Suppliers & Procurement)
 import { supplierRouter, supplierProductRouter } from './modules/suppliers/supplier.routes.js';
+import { supplierRepository } from './modules/suppliers/supplier.repository.js';
 import { quoteRouter, purchaseOrderRouter, goodsReceiptRouter } from './modules/procurement/procurement.routes.js';
 import { procurementService } from './modules/procurement/procurement.service.js';
 
 // Domain modules (Dev 4: AI Employee & Autonomous Orchestrator)
+import { assertSupabaseAuthConfigured, createAuthMiddleware } from './auth.middleware.js';
 import { createAIRouter } from './modules/ai/ai.routes.js';
+import { ReplenishmentTriggerService } from './modules/ai/replenishment-trigger.service.js';
+import { taskService } from './modules/ai/task.service.js';
 
-const app = express();
+export const app = express();
 export const prisma = new PrismaClient();
 export const inventoryService = new InventoryService(prisma);
 export const salesService = new SalesService(prisma);
+export const replenishmentTriggerService = new ReplenishmentTriggerService(prisma);
+supplierRepository.configure(prisma);
+procurementService.configurePersistence(prisma, inventoryService);
+salesService.setTriggerService(replenishmentTriggerService);
+taskService.setPrisma(prisma);
 const port = Number(process.env.PORT ?? 3001);
 const webOrigin = process.env.WEB_ORIGIN ?? 'http://localhost:5173';
 
@@ -46,17 +56,12 @@ app.use((req, res, next) => {
   next();
 });
 
-declare global {
-  namespace Express { interface Request { auth?: AuthContext } }
-}
-
-// Demo identity is intentionally replaceable. Production deployments must use a verified session.
-app.use('/api', (req: Request, _res: Response, next) => {
-  if (process.env.AUTH_MODE === 'demo' || !req.auth) {
-    req.auth = { userId: 'demo-owner', storeId: 'demo-store', role: 'OWNER' };
-  }
-  next();
-});
+app.use('/api', createAuthMiddleware({
+  prisma,
+  authMode: process.env.AUTH_MODE,
+  supabaseUrl: process.env.SUPABASE_URL,
+  supabaseAnonKey: process.env.SUPABASE_ANON_KEY,
+}));
 
 app.get('/api/health', async (_req, res) => {
   try {
@@ -76,6 +81,7 @@ app.use('/api/supplier-products', supplierProductRouter);
 app.use('/api', quoteRouter);
 app.use('/api/purchase-orders', purchaseOrderRouter);
 app.use('/api/goods-receipts', goodsReceiptRouter);
+// Real autonomous AI restocking employee routes
 app.use('/api/ai', createAIRouter(prisma));
 
 app.get('/api/dashboard/summary', async (req, res, next) => {
@@ -83,7 +89,7 @@ app.get('/api/dashboard/summary', async (req, res, next) => {
   const period = typeof req.query.period === 'string' ? req.query.period : 'today';
   if (!['today', '7d', '30d'].includes(period)) return res.status(400).json(errorEnvelope('VALIDATION_ERROR', 'Choose today, 7d, or 30d for the period.', res.locals.requestId));
 
-  let health = { totalProducts: 0, lowStockCount: 0, stockoutCount: 0 };
+  let health: { totalProducts: number; lowStockCount: number; stockoutCount: number } | null = null;
   try {
     const healthPromise = inventoryService.getInventoryHealth(req.auth.storeId);
     const timeoutPromise = new Promise<never>((_, reject) => setTimeout(() => reject(new Error('DB_TIMEOUT')), 600));
@@ -92,23 +98,23 @@ app.get('/api/dashboard/summary', async (req, res, next) => {
     // Database service offline or pending Docker container launch
   }
   const proc = await procurementService.getAnalyticsSummary(req.auth.storeId);
-  const salesMetrics = await salesService.getDashboardSummary(req.auth.storeId, period as 'today' | '7d' | '30d').catch(() => ({
-    sales: '0.00',
-    transactions: 0,
-    averageBasket: '0.00',
-    grossProfit: '0.00',
-  }));
+  const salesMetrics = await salesService.getDashboardSummary(req.auth.storeId, period as 'today' | '7d' | '30d').catch(() => null);
 
   res.json(successEnvelope({
     period,
     storeId: req.auth.storeId,
-    dataAvailable: true,
-    sales: salesMetrics.sales,
-    transactions: salesMetrics.transactions,
-    averageBasket: salesMetrics.averageBasket,
-    grossProfit: salesMetrics.grossProfit,
-    lowStockCount: health.lowStockCount,
-    totalProducts: health.totalProducts,
+    dataAvailable: Boolean(health && salesMetrics),
+    availability: {
+      sales: salesMetrics ? 'AVAILABLE' : 'UNAVAILABLE',
+      inventory: health ? 'AVAILABLE' : 'UNAVAILABLE',
+      procurement: proc.dataAvailable ? 'AVAILABLE' : 'UNAVAILABLE',
+    },
+    sales: salesMetrics?.sales ?? null,
+    transactions: salesMetrics?.transactions ?? null,
+    averageBasket: salesMetrics?.averageBasket ?? null,
+    grossProfit: salesMetrics?.grossProfit ?? null,
+    lowStockCount: health?.lowStockCount ?? null,
+    totalProducts: health?.totalProducts ?? null,
     openPurchaseOrders: proc.openPurchaseOrders,
     updatedAt: new Date().toISOString(),
   }, res.locals.requestId));
@@ -258,4 +264,12 @@ const errors: ErrorRequestHandler = (err, _req, res, _next) => {
 };
 app.use(errors);
 
-app.listen(port, () => console.log(`DukaanAI API listening on port ${port}`));
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  try {
+    assertSupabaseAuthConfigured();
+    app.listen(port, () => console.log(`DukaanAI API listening on port ${port}`));
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : 'API configuration is invalid.');
+    process.exitCode = 1;
+  }
+}

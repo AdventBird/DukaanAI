@@ -240,8 +240,27 @@ async function main() {
       sellingPrice: '125.00',
       purchaseCost: '112.00',
       reorderLevel: '12',
+      targetStockLevel: '36',
       openingStock: '20',
       barcode: '8901719114321',
+    },
+    {
+      id: 'prod-parle-g-100g',
+      sku: 'PARLE-G-100G',
+      name: 'Parle-G 100g',
+      brand: 'Parle',
+      categoryId: 'cat-snacks',
+      description: 'Original Parle-G 100g glucose biscuits - high turnover daily Kirana snack',
+      stockUnit: StockUnit.PACKET,
+      purchasePackLabel: 'Carton (40 packets)',
+      unitsPerPurchasePack: '1',
+      mrp: '10.00',
+      sellingPrice: '10.00',
+      purchaseCost: '8.00',
+      reorderLevel: '10',
+      targetStockLevel: '40',
+      openingStock: '8',
+      barcode: '8901719101017',
     },
     {
       id: 'prod-maggi-noodles',
@@ -346,6 +365,7 @@ async function main() {
         sellingPrice: p.sellingPrice,
         purchaseCost: p.purchaseCost,
         reorderLevel: p.reorderLevel,
+        targetStockLevel: (p as any).targetStockLevel || '0',
       },
       create: {
         id: p.id,
@@ -362,6 +382,7 @@ async function main() {
         sellingPrice: p.sellingPrice,
         purchaseCost: p.purchaseCost,
         reorderLevel: p.reorderLevel,
+        targetStockLevel: (p as any).targetStockLevel || '0',
         isActive: true,
       },
     });
@@ -392,8 +413,154 @@ async function main() {
         quantityOnHand: p.openingStock,
       },
     });
+
+    const existingOpening = await prisma.stockMovement.findFirst({
+      where: { storeId: store.id, productId: p.id, movementType: StockMovementType.OPENING },
+    });
+    if (!existingOpening) {
+      await prisma.stockMovement.create({
+        data: {
+          storeId: store.id,
+          productId: p.id,
+          movementType: StockMovementType.OPENING,
+          quantityDelta: p.openingStock,
+          unit: p.stockUnit,
+          reason: 'Initial opening stock count',
+          referenceType: 'OPENING',
+          referenceId: 'demo-seed',
+          actorType: 'STAFF',
+          actorId: 'demo-owner',
+        },
+      });
+    }
   }
   console.log(`✓ ${productsData.length} Real FMCG products, barcodes, and inventory balances seeded`);
+
+  // 4b. Wholesale Suppliers & Distributor Product Catalogues
+  const suppliersData = [
+    {
+      id: 'sup-anand',
+      name: 'Anand Wholesale & Agencies (Supplier A)',
+      legalName: 'Anand FMCG Wholesale Pvt Ltd',
+      contactPerson: 'Ramesh Anand',
+      phone: '+91 98201 11222',
+      email: 'orders@anandagencies.com',
+      city: 'Delhi',
+      state: 'Delhi',
+      defaultLeadTimeDays: 1, // Fast 1-day delivery
+      defaultPaymentTerms: 'NET_7',
+      notes: 'Premier FMCG wholesaler. Fast next-day dispatch, highly reliable delivery, ₹42/pack on Parle-G.',
+    },
+    {
+      id: 'sup-balaji',
+      name: 'Balaji Traders & Distributors (Supplier B)',
+      legalName: 'Balaji Trading Corporation',
+      contactPerson: 'Suresh Patel',
+      phone: '+91 98202 33444',
+      email: 'sales@balajitraders.in',
+      city: 'Ghaziabad',
+      state: 'Uttar Pradesh',
+      defaultLeadTimeDays: 3, // Slower 3-day delivery
+      defaultPaymentTerms: 'NET_15',
+      notes: 'Bulk discount distributor. Lower prices (₹40/pack on Parle-G), but longer 3-day delivery lead time.',
+    },
+  ];
+
+  for (const s of suppliersData) {
+    await prisma.supplier.upsert({
+      where: { storeId_id: { storeId: store.id, id: s.id } },
+      update: {
+        name: s.name,
+        contactPerson: s.contactPerson,
+        phone: s.phone,
+        defaultLeadTimeDays: s.defaultLeadTimeDays,
+        defaultPaymentTerms: s.defaultPaymentTerms,
+      },
+      create: {
+        id: s.id,
+        storeId: store.id,
+        name: s.name,
+        legalName: s.legalName,
+        contactPerson: s.contactPerson,
+        phone: s.phone,
+        email: s.email,
+        city: s.city,
+        state: s.state,
+        defaultLeadTimeDays: s.defaultLeadTimeDays,
+        defaultPaymentTerms: s.defaultPaymentTerms,
+        notes: s.notes,
+        isActive: true,
+      },
+    });
+  }
+
+  // Supplier-Product mappings (Demo scenario: Parle-G 100g Supplier A @ ₹42 vs Supplier B @ ₹40)
+  const supplierProductsData = [
+    {
+      supplierId: 'sup-anand',
+      productId: 'prod-parle-g-100g',
+      purchaseUnitLabel: 'Packet',
+      unitsPerPurchasePack: '1',
+      minimumOrderQuantity: '1',
+      lastQuotedPrice: '42.00',
+      leadTimeDays: 1,
+    },
+    {
+      supplierId: 'sup-balaji',
+      productId: 'prod-parle-g-100g',
+      purchaseUnitLabel: 'Packet',
+      unitsPerPurchasePack: '1',
+      minimumOrderQuantity: '1',
+      lastQuotedPrice: '40.00',
+      leadTimeDays: 3,
+    },
+    {
+      supplierId: 'sup-anand',
+      productId: 'prod-amul-butter',
+      purchaseUnitLabel: 'Carton (20 blocks)',
+      unitsPerPurchasePack: '20',
+      minimumOrderQuantity: '1',
+      lastQuotedPrice: '4960.00',
+      leadTimeDays: 1,
+    },
+    {
+      supplierId: 'sup-balaji',
+      productId: 'prod-maggi-noodles',
+      purchaseUnitLabel: 'Carton (96 packets)',
+      unitsPerPurchasePack: '96',
+      minimumOrderQuantity: '1',
+      lastQuotedPrice: '1132.80',
+      leadTimeDays: 3,
+    },
+  ];
+
+  for (const sp of supplierProductsData) {
+    await prisma.supplierProduct.upsert({
+      where: {
+        storeId_supplierId_productId: {
+          storeId: store.id,
+          supplierId: sp.supplierId,
+          productId: sp.productId,
+        },
+      },
+      update: {
+        lastQuotedPrice: sp.lastQuotedPrice,
+        leadTimeDays: sp.leadTimeDays,
+      },
+      create: {
+        storeId: store.id,
+        supplierId: sp.supplierId,
+        productId: sp.productId,
+        purchaseUnitLabel: sp.purchaseUnitLabel,
+        unitsPerPurchasePack: sp.unitsPerPurchasePack,
+        minimumOrderQuantity: sp.minimumOrderQuantity,
+        lastQuotedPrice: sp.lastQuotedPrice,
+        leadTimeDays: sp.leadTimeDays,
+        isActive: true,
+      },
+    });
+  }
+  console.log(`✓ 2 Wholesale Suppliers and ${supplierProductsData.length} Supplier-Product catalogue mappings seeded`);
 
   // 5. 26 Real-World Indian Kirana POS Sales across the past 7 days & today
   const salesHistory = [
@@ -410,6 +577,7 @@ async function main() {
       completedAt: new Date('2026-11-01T07:45:00+05:30'),
       items: [
         { productId: 'prod-amul-milk', name: 'Amul Taaza Homogenised Toned Milk 1L', barcode: '8901262010054', unit: 'PACKET', qty: '3', price: '56.00', cost: '51.50', lineTotal: '168.00' },
+        { productId: 'prod-parle-g-100g', name: 'Parle-G 100g', barcode: '8901719101017', unit: 'PACKET', qty: '6', price: '10.00', cost: '8.00', lineTotal: '60.00' },
       ],
       paymentRef: 'CASH-TILL-01',
     },
@@ -498,6 +666,7 @@ async function main() {
       items: [
         { productId: 'prod-amul-milk', name: 'Amul Taaza Homogenised Toned Milk 1L', barcode: '8901262010054', unit: 'PACKET', qty: '2', price: '56.00', cost: '51.50', lineTotal: '112.00' },
         { productId: 'prod-tata-salt', name: 'Tata Salt Vacuum Evaporated Iodised Salt 1kg', barcode: '8904004400301', unit: 'PACKET', qty: '1', price: '28.00', cost: '23.50', lineTotal: '28.00' },
+        { productId: 'prod-parle-g-100g', name: 'Parle-G 100g', barcode: '8901719101017', unit: 'PACKET', qty: '6', price: '10.00', cost: '8.00', lineTotal: '60.00' },
         { productId: 'prod-parle-g', name: 'Parle-G Gold Glucose Biscuits 1kg Family Pack', barcode: '8901719114321', unit: 'PACKET', qty: '1', price: '130.00', cost: '118.00', lineTotal: '130.00' },
       ],
       paymentRef: 'CASH-TILL-01',

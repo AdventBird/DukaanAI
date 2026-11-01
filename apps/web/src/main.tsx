@@ -15,13 +15,9 @@ import { FloatingChatWidget } from './components/FloatingChatWidget.js';
 
 const nav = [
   { label: 'Overview', path: '/dashboard', icon: LayoutDashboard },
+  { label: 'Products & Stock', path: '/products', icon: Package },
   { label: 'POS', path: '/pos', icon: ShoppingCart },
-  { label: 'Products', path: '/products', icon: Package },
-  { label: 'Inventory', path: '/inventory', icon: Boxes },
-  { label: 'Sales', path: '/sales', icon: ReceiptText },
-  { label: 'Suppliers', path: '/suppliers', icon: Truck },
-  { label: 'Finance', path: '/finance', icon: Wallet },
-  { label: 'Analytics', path: '/analytics', icon: BarChart3 },
+  { label: 'Purchases & Suppliers', path: '/suppliers', icon: Truck },
   { label: 'AI Employee', path: '/ai', icon: Bot },
 ];
 

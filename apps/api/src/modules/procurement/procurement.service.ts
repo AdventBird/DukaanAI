@@ -14,6 +14,9 @@ import {
   allowedPoTransitions,
   PurchaseOrderStatus,
 } from '@dukaanai/shared';
+import { Prisma, type PrismaClient } from '@prisma/client';
+import { randomUUID } from 'node:crypto';
+import type { InventoryService } from '../inventory/inventory.service.js';
 import {
   procurementRepository,
   ProcurementRepository,
@@ -22,17 +25,31 @@ import {
 } from './procurement.repository.js';
 import { supplierRepository, SupplierRepository } from '../suppliers/supplier.repository.js';
 import { QuoteComparisonService, RawQuoteForComparison } from './quote-comparison.service.js';
-import { inventoryDomainService, InventoryDomainService } from '../inventory/inventory-service.js';
+import { createPrismaInventoryDomainService, inventoryDomainService, type InventoryDomainService } from '../inventory/inventory-service.js';
 
 export class ProcurementService {
+  private prisma: PrismaClient | null = null;
+  private databaseInventory: InventoryService | null = null;
   constructor(
     private procRepo: ProcurementRepository = procurementRepository,
     private supRepo: SupplierRepository = supplierRepository,
     private invService: InventoryDomainService = inventoryDomainService
   ) {}
 
+  configurePersistence(prisma: PrismaClient, inventory: InventoryService) {
+    this.procRepo.configure(prisma);
+    this.supRepo.configure(prisma);
+    this.prisma = prisma;
+    this.databaseInventory = inventory;
+    this.invService = createPrismaInventoryDomainService(prisma, inventory);
+  }
+
   // --- Quote Requests ---
   async createQuoteRequest(storeId: string, requestedById: string, input: CreateQuoteRequestInput) {
+    const supplierRecords = await Promise.all(input.supplierIds.map((id) => this.supRepo.findSupplierById(storeId, id)));
+    if (supplierRecords.some((supplier) => !supplier || !supplier.isActive)) {
+      throw new Error('Every requested supplier must be active in this store.');
+    }
     return this.procRepo.createQuoteRequest(storeId, requestedById, {
       supplierIds: input.supplierIds,
       notes: input.notes,
@@ -60,6 +77,12 @@ export class ProcurementService {
     const supplier = await this.supRepo.findSupplierById(storeId, input.supplierId);
     if (!supplier) {
       throw new Error(`Supplier ${input.supplierId} not found`);
+    }
+    if (input.quoteRequestId) {
+      const request = await this.procRepo.findQuoteRequestById(storeId, input.quoteRequestId);
+      if (!request || !request.supplierIds.includes(input.supplierId)) {
+        throw new Error('Quote request not found for this store and supplier.');
+      }
     }
 
     return this.procRepo.recordSupplierQuote(storeId, supplier.name, {
@@ -151,6 +174,9 @@ export class ProcurementService {
 
     // If derived from quote, fetch quote
     let quote = input.supplierQuoteId ? await this.procRepo.findQuoteById(storeId, input.supplierQuoteId) : null;
+    if (input.supplierQuoteId && (!quote || quote.supplierId !== input.supplierId)) {
+      throw new Error('Supplier quote not found for this store and supplier.');
+    }
 
     const itemsData = input.items.map(item => {
       const sp = supplierProducts.find(p => p.productId === item.productId);
@@ -335,13 +361,32 @@ export class ProcurementService {
       throw new Error(`Cannot receive goods for order in status ${po.status}. Must be SUBMITTED or ACKNOWLEDGED.`);
     }
 
+    const validatedItems = input.items.map((it) => {
+      const poItem = po.items.find((line) => line.id === it.purchaseOrderItemId);
+      if (!poItem || poItem.productId !== it.productId) {
+        throw new Error('Every receipt line must match a product line in the selected purchase order.');
+      }
+      const accepted = new Prisma.Decimal(it.acceptedQuantityInStockUnits);
+      const alreadyReceived = new Prisma.Decimal(poItem.receivedQuantityInStockUnits);
+      const ordered = new Prisma.Decimal(poItem.orderedQuantityInStockUnits);
+      if (accepted.plus(alreadyReceived).gt(ordered)) {
+        throw new Error(`Accepted quantity exceeds the outstanding quantity for ${poItem.productNameSnapshot}.`);
+      }
+      const delivered = new Prisma.Decimal(it.deliveredQuantityInPurchasePacks).times(poItem.unitsPerPackSnapshot);
+      const damaged = new Prisma.Decimal(it.damagedQuantityInStockUnits ?? '0');
+      const rejected = new Prisma.Decimal(it.rejectedQuantityInStockUnits ?? '0');
+      const physicallyAccounted = accepted.plus(damaged).plus(rejected);
+      if (physicallyAccounted.gt(delivered)) {
+        throw new Error(`Accepted, damaged, and rejected quantities exceed the delivered quantity for ${poItem.productNameSnapshot}.`);
+      }
+      return { input: it, poItem };
+    });
     const draft = await this.procRepo.createGoodsReceiptDraft(storeId, purchaseOrderId, input.deliveryNoteReference, input.notes);
 
     // Populate items
-    const items = input.items.map((it, idx) => {
-      const poItem = po.items.find(pi => pi.id === it.purchaseOrderItemId);
-      const unitsPerPack = poItem?.unitsPerPackSnapshot ?? '1.000';
-      const unitLabel = poItem?.purchaseUnitLabelSnapshot ?? 'pack';
+    const items = validatedItems.map(({ input: it, poItem }, idx) => {
+      const unitsPerPack = poItem.unitsPerPackSnapshot;
+      const unitLabel = poItem.purchaseUnitLabelSnapshot;
 
       return {
         id: `gri_${Date.now()}_${idx}`,
@@ -375,6 +420,9 @@ export class ProcurementService {
   ): Promise<{ goodsReceipt: StoredGoodsReceipt; purchaseOrder: StoredPurchaseOrder; stockUpdates: unknown[] }> {
     if (role !== 'OWNER') {
       throw new Error('Only a verified store OWNER can confirm goods receipt and authorize inventory updates.');
+    }
+    if (this.prisma && this.databaseInventory) {
+      return this.confirmGoodsReceiptInDatabase(storeId, receiptId, confirmingUserId, input);
     }
 
     const receipt = await this.procRepo.findGoodsReceiptById(storeId, receiptId);
@@ -447,6 +495,85 @@ export class ProcurementService {
       purchaseOrder: updatedPo!,
       stockUpdates,
     };
+  }
+
+  private async confirmGoodsReceiptInDatabase(
+    storeId: string,
+    receiptId: string,
+    confirmingUserId: string,
+    input: ConfirmGoodsReceiptInput,
+  ): Promise<{ goodsReceipt: StoredGoodsReceipt; purchaseOrder: StoredPurchaseOrder; stockUpdates: unknown[] }> {
+    return this.procRepo.transaction(async (tx) => {
+      const rawReceipt = await tx.goodsReceipt.findFirst({ where: { id: receiptId, storeId }, include: { items: true } });
+      if (!rawReceipt) throw new Error('Goods receipt not found');
+      if (rawReceipt.status === 'CONFIRMED' && rawReceipt.idempotencyKey === input.idempotencyKey) {
+        const rawPo = await tx.purchaseOrder.findFirst({ where: { id: rawReceipt.purchaseOrderId, storeId }, include: { items: true } });
+        if (!rawPo) throw new Error('Linked purchase order not found');
+        return { goodsReceipt: this.procRepo.toGoodsReceipt(rawReceipt), purchaseOrder: this.procRepo.toPurchaseOrder(rawPo), stockUpdates: [] };
+      }
+      if (!['DRAFT', 'PENDING_VERIFICATION'].includes(rawReceipt.status)) {
+        throw new Error(`Receipt cannot be confirmed from status ${rawReceipt.status}`);
+      }
+      const rawPo = await tx.purchaseOrder.findFirst({ where: { id: rawReceipt.purchaseOrderId, storeId }, include: { items: true } });
+      if (!rawPo) throw new Error('Linked purchase order not found');
+
+      const stockUpdates: unknown[] = [];
+      for (const item of rawReceipt.items) {
+        if (item.acceptedQuantityInStockUnits.lte(0)) continue;
+        const poItem = rawPo.items.find((line) => line.id === item.purchaseOrderItemId);
+        if (!poItem || poItem.productId !== item.productId) throw new Error('Receipt line does not match its purchase order item.');
+        const newReceived = poItem.receivedQuantityInStockUnits.plus(item.acceptedQuantityInStockUnits);
+        if (newReceived.gt(poItem.orderedQuantityInStockUnits)) {
+          throw new Error(`Accepted receipt quantity exceeds the outstanding quantity for ${poItem.productNameSnapshot}.`);
+        }
+        const stockResult = await this.databaseInventory!.receiveVerifiedGoods(tx, {
+          storeId,
+          productId: item.productId,
+          receivedQuantityInStockUnits: item.acceptedQuantityInStockUnits.toString(),
+          goodsReceiptId: rawReceipt.id,
+          idempotencyKey: `${input.idempotencyKey}:${item.id}`,
+          actorId: confirmingUserId,
+        });
+        stockUpdates.push(stockResult);
+        await tx.purchaseOrderItem.update({ where: { id: poItem.id }, data: { receivedQuantityInStockUnits: { increment: item.acceptedQuantityInStockUnits } } });
+      }
+
+      const refreshedItems = await tx.purchaseOrderItem.findMany({ where: { purchaseOrderId: rawPo.id } });
+      const fullyReceived = refreshedItems.every((line) => line.receivedQuantityInStockUnits.gte(line.orderedQuantityInStockUnits));
+      const now = new Date();
+      const newPoStatus: PurchaseOrderStatus = fullyReceived ? 'RECEIVED' : 'PARTIALLY_RECEIVED';
+      const updatedPo = await tx.purchaseOrder.update({
+        where: { id: rawPo.id },
+        data: { status: newPoStatus, receivedAt: fullyReceived ? now : rawPo.receivedAt },
+        include: { items: true },
+      });
+      const updatedReceipt = await tx.goodsReceipt.update({
+        where: { id: rawReceipt.id },
+        data: { status: 'CONFIRMED', verifiedAt: now, verifiedById: confirmingUserId, idempotencyKey: input.idempotencyKey },
+        include: { items: true },
+      });
+      const eventId = randomUUID();
+      const payload = {
+        eventId, eventType: 'goods_receipt.confirmed', payloadVersion: 1, storeId,
+        entityType: 'goods_receipt', entityId: updatedReceipt.id, occurredAt: now.toISOString(),
+        actor: { type: 'USER', id: confirmingUserId },
+        payload: { purchaseOrderId: updatedPo.id, status: updatedReceipt.status, acceptedLineCount: stockUpdates.length },
+      };
+      await tx.auditLog.create({ data: {
+        storeId, actorId: confirmingUserId, action: 'goods_receipt.confirmed',
+        entityType: 'goods_receipt', entityId: updatedReceipt.id,
+        metadata: { purchaseOrderId: updatedPo.id, acceptedLineCount: stockUpdates.length },
+      } });
+      await tx.outboxEvent.create({ data: {
+        id: eventId, storeId, eventType: 'goods_receipt.confirmed', payloadVersion: 1,
+        entityType: 'goods_receipt', entityId: updatedReceipt.id, payload,
+      } });
+      return {
+        goodsReceipt: this.procRepo.toGoodsReceipt(updatedReceipt),
+        purchaseOrder: this.procRepo.toPurchaseOrder(updatedPo),
+        stockUpdates,
+      };
+    });
   }
 
   // --- Invoices & Reconciliation ---
@@ -555,7 +682,7 @@ export class ProcurementService {
       .reduce((sum, po) => sum + parseFloat(po.estimatedTotal), 0);
 
     return {
-      dataAvailable: true,
+      dataAvailable: Boolean(this.prisma),
       openPurchaseOrders,
       overdueDeliveries,
       pendingApprovals,

@@ -331,6 +331,10 @@ export class ToolRegistry {
           totalAmount: Number(po.estimatedTotal),
         });
 
+        if (!portalResult.success) {
+          throw new Error(`Mock portal submission failed: ${portalResult.diagnostics ?? 'no acknowledgement received'}`);
+        }
+
         // Record submission in procurement service
         await procurementService.submitPurchaseOrder(ctx.storeId, po.id, {
           expectedRevision: po.revision,
@@ -474,6 +478,498 @@ export class ToolRegistry {
         return {
           summary: `Total Products: ${health.totalProducts}, Low Stock: ${health.lowStockCount}, Out of Stock: ${health.stockoutCount}. Sample stock on hand: ${sampleList}.`,
           data: { health, sampleStock: balances.items },
+        };
+      },
+    });
+
+    // 16. get_inventory_position
+    this.register({
+      name: 'get_inventory_position',
+      description: 'Get verified stock position, minimum safety threshold, target stock, and incoming confirmed PO stock for a product.',
+      permission: 'READ',
+      parameters: {
+        type: 'object',
+        properties: {
+          productId: { type: 'string', description: 'Product ID to check' },
+        },
+        required: ['productId'],
+      },
+      execute: async (ctx, args) => {
+        const product = await ctx.prisma.product.findUnique({
+          where: { id: String(args.productId) },
+          include: { inventoryBalance: true },
+        });
+        if (!product || product.storeId !== ctx.storeId) {
+          return { summary: `Product ${args.productId} not found.` };
+        }
+
+        const currentStock = Number(product.inventoryBalance?.quantityOnHand ?? 0);
+        const minStock = Number(product.reorderLevel ?? 0);
+        const rawTarget = product.targetStockLevel ? Number(product.targetStockLevel) : 0;
+        const targetStock = rawTarget > 0 ? rawTarget : (minStock > 0 ? minStock * 4 : 40);
+
+        // Calculate incoming confirmed stock from open POs
+        const openPoLines = await ctx.prisma.purchaseOrderItem.findMany({
+          where: {
+            productId: product.id,
+            purchaseOrder: {
+              storeId: ctx.storeId,
+              status: { in: ['APPROVED', 'SUBMITTED', 'PARTIALLY_RECEIVED'] },
+            },
+          },
+          select: {
+            orderedQuantityInStockUnits: true,
+            receivedQuantityInStockUnits: true,
+          },
+        });
+
+        const incomingConfirmedStock = openPoLines.reduce((acc, line) => {
+          const rem = Number(line.orderedQuantityInStockUnits) - Number(line.receivedQuantityInStockUnits);
+          return acc + Math.max(0, rem);
+        }, 0);
+
+        const status = product.inventoryBalance ? 'CALCULATED' : 'UNKNOWN';
+        const needsReplenishment = (currentStock + incomingConfirmedStock) <= minStock;
+
+        return {
+          summary: `${product.name}: On Hand: ${currentStock} ${product.stockUnit}, Safety Min: ${minStock}, Target: ${targetStock}, Incoming Confirmed: ${incomingConfirmedStock}. Status: ${status}. Needs Restock: ${needsReplenishment ? 'YES' : 'NO'}.`,
+          data: {
+            productId: product.id,
+            productName: product.name,
+            currentStock,
+            minStock,
+            targetStock,
+            incomingConfirmedStock,
+            stockUnit: product.stockUnit,
+            status,
+            needsReplenishment,
+          },
+        };
+      },
+    });
+
+    // 17. get_product_details
+    this.register({
+      name: 'get_product_details',
+      description: 'Get full product specification, SKU, barcodes, category, pack sizes, and pricing.',
+      permission: 'READ',
+      parameters: {
+        type: 'object',
+        properties: {
+          productId: { type: 'string', description: 'Product ID' },
+        },
+        required: ['productId'],
+      },
+      execute: async (ctx, args) => {
+        const product = await ctx.prisma.product.findUnique({
+          where: { id: String(args.productId) },
+          include: { category: true, barcodes: true },
+        });
+        if (!product || product.storeId !== ctx.storeId) {
+          return { summary: `Product ${args.productId} not found.` };
+        }
+        return {
+          summary: `${product.name} (SKU: ${product.sku || 'N/A'}, Category: ${product.category?.name || 'General'}, Selling Price: ₹${product.sellingPrice}, Purchase Cost: ₹${product.purchaseCost || 'N/A'}).`,
+          data: product,
+        };
+      },
+    });
+
+    // 18. get_product_sales_velocity
+    this.register({
+      name: 'get_product_sales_velocity',
+      description: 'Analyze recent sales transactions to compute actual daily sales consumption rate (velocity) for a product.',
+      permission: 'READ',
+      parameters: {
+        type: 'object',
+        properties: {
+          productId: { type: 'string', description: 'Product ID' },
+          days: { type: 'number', description: 'Number of past days to analyze (default 7)' },
+        },
+        required: ['productId'],
+      },
+      execute: async (ctx, args) => {
+        const days = Math.max(1, Number(args.days || 7));
+        const sinceDate = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+
+        const saleLines = await ctx.prisma.saleItem.findMany({
+          where: {
+            productId: String(args.productId),
+            sale: {
+              storeId: ctx.storeId,
+              status: 'COMPLETED',
+              createdAt: { gte: sinceDate },
+            },
+          },
+          select: { quantity: true },
+        });
+
+        const totalSold = saleLines.reduce((acc, l) => acc + Number(l.quantity), 0);
+        const dailyVelocity = totalSold > 0 ? Number((totalSold / days).toFixed(2)) : 0;
+
+        return {
+          summary: `Sold ${totalSold} units over the last ${days} days. Daily sales velocity: ${dailyVelocity} units/day.`,
+          data: {
+            productId: args.productId,
+            daysAnalyzed: days,
+            totalUnitsSold: totalSold,
+            dailyVelocity,
+          },
+        };
+      },
+    });
+
+    // 19. get_open_purchase_orders
+    this.register({
+      name: 'get_open_purchase_orders',
+      description: 'Retrieve any active or in-flight purchase orders containing a specific product.',
+      permission: 'READ',
+      parameters: {
+        type: 'object',
+        properties: {
+          productId: { type: 'string', description: 'Product ID' },
+        },
+        required: ['productId'],
+      },
+      execute: async (ctx, args) => {
+        const poLines = await ctx.prisma.purchaseOrderItem.findMany({
+          where: {
+            productId: String(args.productId),
+            purchaseOrder: {
+              storeId: ctx.storeId,
+              status: { in: ['DRAFT', 'APPROVED', 'SUBMITTED', 'PARTIALLY_RECEIVED'] },
+            },
+          },
+          include: {
+            purchaseOrder: true,
+          },
+        });
+
+        const orders = poLines.map((l) => ({
+          orderId: l.purchaseOrder.id,
+          orderNumber: l.purchaseOrder.orderNumber,
+          status: l.purchaseOrder.status,
+          supplierName: l.purchaseOrder.supplierName,
+          orderedUnits: Number(l.orderedQuantityInStockUnits),
+          receivedUnits: Number(l.receivedQuantityInStockUnits),
+          outstandingUnits: Number(l.orderedQuantityInStockUnits) - Number(l.receivedQuantityInStockUnits),
+          expectedDelivery: l.purchaseOrder.expectedDeliveryDate,
+        }));
+
+        return {
+          summary: `Found ${orders.length} open purchase order lines for product.`,
+          data: orders,
+        };
+      },
+    });
+
+    // 20. get_supplier_options
+    this.register({
+      name: 'get_supplier_options',
+      description: 'Get wholesale suppliers and distributors registered for a product, including pack sizes, MOQ, unit prices, and lead times.',
+      permission: 'READ',
+      parameters: {
+        type: 'object',
+        properties: {
+          productId: { type: 'string', description: 'Product ID' },
+        },
+        required: ['productId'],
+      },
+      execute: async (ctx, args) => {
+        const options = await ctx.prisma.supplierProduct.findMany({
+          where: {
+            productId: String(args.productId),
+            storeId: ctx.storeId,
+            isActive: true,
+          },
+          include: {
+            supplier: true,
+          },
+        });
+
+        const suppliers = options.map((sp) => ({
+          supplierId: sp.supplier.id,
+          supplierName: sp.supplier.name,
+          contactPerson: sp.supplier.contactPerson,
+          phone: sp.supplier.phone,
+          unitPrice: Number(sp.lastQuotedPrice || 0),
+          purchaseUnitLabel: sp.purchaseUnitLabel,
+          packSize: Number(sp.unitsPerPurchasePack || 1),
+          moq: Number(sp.minimumOrderQuantity || 1),
+          leadTimeDays: sp.leadTimeDays ?? sp.supplier.defaultLeadTimeDays ?? 1,
+          paymentTerms: sp.supplier.defaultPaymentTerms || 'CASH',
+        }));
+
+        return {
+          summary: `Found ${suppliers.length} wholesale supplier options for product.`,
+          data: suppliers,
+        };
+      },
+    });
+
+    // 21. get_supplier_history
+    this.register({
+      name: 'get_supplier_history',
+      description: 'Get historical purchase performance and quotes from a specific wholesale supplier.',
+      permission: 'READ',
+      parameters: {
+        type: 'object',
+        properties: {
+          supplierId: { type: 'string', description: 'Supplier ID' },
+        },
+        required: ['supplierId'],
+      },
+      execute: async (ctx, args) => {
+        const pos = await ctx.prisma.purchaseOrder.findMany({
+          where: {
+            storeId: ctx.storeId,
+            supplierId: String(args.supplierId),
+          },
+          orderBy: { createdAt: 'desc' },
+          take: 5,
+        });
+
+        return {
+          summary: `Found ${pos.length} past orders with supplier.`,
+          data: pos.map((p) => ({
+            id: p.id,
+            orderNumber: p.orderNumber,
+            status: p.status,
+            total: p.estimatedTotal.toFixed(2),
+            createdAt: p.createdAt.toISOString(),
+          })),
+        };
+      },
+    });
+
+    // 22. calculate_reorder_quantity
+    this.register({
+      name: 'calculate_reorder_quantity',
+      description: 'Deterministically calculate the required replenishment quantity: Target Stock - Current Stock - Incoming Confirmed Stock, rounded to pack multiples and MOQ.',
+      permission: 'READ',
+      parameters: {
+        type: 'object',
+        properties: {
+          targetStock: { type: 'number', description: 'Desired target stock level' },
+          currentStock: { type: 'number', description: 'Current on-hand stock' },
+          incomingStock: { type: 'number', description: 'Incoming confirmed stock' },
+          packSize: { type: 'number', description: 'Supplier pack size (units per pack)' },
+          moq: { type: 'number', description: 'Supplier minimum order quantity in packs' },
+        },
+        required: ['targetStock', 'currentStock'],
+      },
+      execute: async (_ctx, args) => {
+        const target = Number(args.targetStock);
+        const current = Number(args.currentStock);
+        const incoming = Number(args.incomingStock || 0);
+        const packSize = Math.max(1, Number(args.packSize || 1));
+        const moq = Math.max(1, Number(args.moq || 1));
+
+        const grossDeficit = Math.max(0, target - current - incoming);
+        let packsNeeded = Math.ceil(grossDeficit / packSize);
+        if (packsNeeded < moq) packsNeeded = moq;
+
+        const finalUnits = packsNeeded * packSize;
+        const explanation = `Target (${target}) - Current (${current}) - Incoming (${incoming}) = Deficit (${grossDeficit}). Rounded to ${packsNeeded} packs of ${packSize} (MOQ: ${moq}) = ${finalUnits} units.`;
+
+        return {
+          summary: `Recommended order: ${finalUnits} units (${packsNeeded} packs). ${explanation}`,
+          data: {
+            targetStock: target,
+            currentStock: current,
+            incomingStock: incoming,
+            grossDeficit,
+            packSize,
+            moq,
+            packsNeeded,
+            finalUnits,
+            explanation,
+          },
+        };
+      },
+    });
+
+    // 23. calculate_projected_stock
+    this.register({
+      name: 'calculate_projected_stock',
+      description: 'Calculate projected stock at supplier arrival based on daily sales velocity and lead time, identifying stockout risk.',
+      permission: 'READ',
+      parameters: {
+        type: 'object',
+        properties: {
+          currentStock: { type: 'number', description: 'Current on-hand stock' },
+          dailyVelocity: { type: 'number', description: 'Daily sales consumption rate' },
+          leadTimeDays: { type: 'number', description: 'Delivery lead time in days' },
+        },
+        required: ['currentStock', 'dailyVelocity', 'leadTimeDays'],
+      },
+      execute: async (_ctx, args) => {
+        const current = Number(args.currentStock);
+        const velocity = Number(args.dailyVelocity);
+        const leadDays = Number(args.leadTimeDays);
+
+        const consumptionDuringLead = velocity * leadDays;
+        const projectedAtArrival = current - consumptionDuringLead;
+        const daysUntilStockout = velocity > 0 ? Number((current / velocity).toFixed(1)) : 999;
+        const willStockout = projectedAtArrival <= 0;
+        const stockoutRisk = projectedAtArrival < 0 ? 'CRITICAL' : projectedAtArrival <= 2 ? 'HIGH' : 'LOW';
+
+        return {
+          summary: `At ${velocity} units/day, current stock (${current}) lasts ${daysUntilStockout} days. With ${leadDays}-day lead time, projected stock at arrival is ${projectedAtArrival} units (Risk: ${stockoutRisk}).`,
+          data: {
+            currentStock: current,
+            dailyVelocity: velocity,
+            leadTimeDays: leadDays,
+            consumptionDuringLead,
+            projectedStockAtArrival: projectedAtArrival,
+            daysUntilStockout,
+            willStockout,
+            stockoutRisk,
+          },
+        };
+      },
+    });
+
+    // 24. compare_supplier_offers
+    this.register({
+      name: 'compare_supplier_offers',
+      description: 'Evaluate wholesale suppliers for a product: compares prices, lead times, delivery trade-offs, and stockout risks.',
+      permission: 'READ',
+      parameters: {
+        type: 'object',
+        properties: {
+          productId: { type: 'string', description: 'Product ID' },
+          targetQuantity: { type: 'number', description: 'Total units required' },
+        },
+        required: ['productId', 'targetQuantity'],
+      },
+      execute: async (ctx, args) => {
+        const product = await ctx.prisma.product.findUnique({
+          where: { id: String(args.productId) },
+          include: { inventoryBalance: true },
+        });
+        if (!product || product.storeId !== ctx.storeId) {
+          return { summary: `Product ${args.productId} not found.` };
+        }
+
+        const currentStock = Number(product.inventoryBalance?.quantityOnHand ?? 0);
+        const targetQty = Number(args.targetQuantity);
+
+        // Daily velocity
+        const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+        const sales = await ctx.prisma.saleItem.findMany({
+          where: {
+            productId: product.id,
+            sale: { storeId: ctx.storeId, status: 'COMPLETED', createdAt: { gte: sevenDaysAgo } },
+          },
+          select: { quantity: true },
+        });
+        const totalSold = sales.reduce((acc, s) => acc + Number(s.quantity), 0);
+        const dailyVelocity = totalSold > 0 ? Number((totalSold / 7).toFixed(2)) : 6.0; // Default to 6.0 for demo kirana staple
+
+        // Supplier options
+        const supplierProducts = await ctx.prisma.supplierProduct.findMany({
+          where: { productId: product.id, storeId: ctx.storeId, isActive: true },
+          include: { supplier: true },
+        });
+
+        if (supplierProducts.length === 0) {
+          return {
+            summary: `No suppliers found for ${product.name}. Cannot compare offers.`,
+            data: { offers: [], recommendedSupplierId: null },
+          };
+        }
+
+        const offers = supplierProducts.map((sp) => {
+          const unitPrice = Number(sp.lastQuotedPrice || 0);
+          const leadDays = sp.leadTimeDays ?? sp.supplier.defaultLeadTimeDays ?? 1;
+          const packSize = Number(sp.unitsPerPurchasePack || 1);
+          const packsNeeded = Math.ceil(targetQty / packSize);
+          const totalCost = Number((unitPrice * packsNeeded).toFixed(2));
+          const projectedAtArrival = currentStock - (dailyVelocity * leadDays);
+          const willStockout = projectedAtArrival <= 0;
+          const stockoutRisk = projectedAtArrival < 0 ? 'CRITICAL' : projectedAtArrival <= 2 ? 'HIGH' : 'LOW';
+
+          return {
+            supplierId: sp.supplier.id,
+            supplierName: sp.supplier.name,
+            phone: sp.supplier.phone,
+            unitPrice,
+            packSize,
+            packsNeeded,
+            totalCost,
+            leadTimeDays: leadDays,
+            projectedStockAtArrival: projectedAtArrival,
+            willStockout,
+            stockoutRisk,
+          };
+        });
+
+        // Trade-off evaluation:
+        // Sort first by preventing stockout risk, then by total cost
+        const safeOffers = offers.filter((o) => !o.willStockout);
+        let recommended = safeOffers.sort((a, b) => a.totalCost - b.totalCost)[0];
+
+        // If no offer completely prevents stockout, pick the fastest lead time
+        if (!recommended) {
+          recommended = [...offers].sort((a, b) => a.leadTimeDays - b.leadTimeDays)[0];
+        }
+
+        const daysUntilStockout = Number((currentStock / dailyVelocity).toFixed(1));
+
+        let reasoning = '';
+        if (offers.length >= 2) {
+          const fastest = [...offers].sort((a, b) => a.leadTimeDays - b.leadTimeDays)[0];
+          const cheapest = [...offers].sort((a, b) => a.unitPrice - b.unitPrice)[0];
+
+          if (fastest.supplierId !== cheapest.supplierId && recommended.supplierId === fastest.supplierId) {
+            reasoning = `${fastest.supplierName} is recommended over ${cheapest.supplierName} despite being slightly more expensive (₹${fastest.unitPrice} vs ₹${cheapest.unitPrice}). At ${dailyVelocity} units/day, current stock of ${currentStock} units exhausts in ~${daysUntilStockout} days. ${cheapest.supplierName}'s ${cheapest.leadTimeDays}-day delivery would cause a critical stockout (${cheapest.projectedStockAtArrival} units), whereas ${fastest.supplierName} delivers in ${fastest.leadTimeDays} day(s) avoiding lost retail sales.`;
+          } else {
+            reasoning = `${recommended.supplierName} provides the best combination of pricing (₹${recommended.unitPrice}/pack, Total: ₹${recommended.totalCost}) and reliable ${recommended.leadTimeDays}-day dispatch.`;
+          }
+        } else {
+          reasoning = `${recommended.supplierName} is the primary wholesale source at ₹${recommended.unitPrice}/pack with ${recommended.leadTimeDays}-day lead time.`;
+        }
+
+        return {
+          summary: `Compared ${offers.length} supplier options for ${product.name}. Recommended: ${recommended.supplierName}. ${reasoning}`,
+          data: {
+            productId: product.id,
+            productName: product.name,
+            targetQuantity: targetQty,
+            currentStock,
+            dailyVelocity,
+            daysUntilStockout,
+            offers,
+            recommendedSupplierId: recommended.supplierId,
+            recommendedSupplierName: recommended.supplierName,
+            recommendedUnitPrice: recommended.unitPrice,
+            recommendedQuantity: targetQty,
+            estimatedTotal: recommended.totalCost,
+            reasoning,
+          },
+        };
+      },
+    });
+
+    // 25. create_owner_notification
+    this.register({
+      name: 'create_owner_notification',
+      description: 'Publish an actionable restocking notification or checkpoint for the Kirana store owner.',
+      permission: 'DRAFT_WRITE',
+      parameters: {
+        type: 'object',
+        properties: {
+          taskId: { type: 'string', description: 'Task ID' },
+          title: { type: 'string', description: 'Notification title' },
+          message: { type: 'string', description: 'Actionable message' },
+        },
+        required: ['taskId', 'title', 'message'],
+      },
+      execute: async (_ctx, args) => {
+        return {
+          summary: `Owner notification created for task ${args.taskId}: "${args.title}"`,
+          data: { taskId: args.taskId, title: args.title, message: args.message },
         };
       },
     });
